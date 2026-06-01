@@ -18,9 +18,12 @@ import {
   Layers,
   Merge,
   AlignJustify,
+  ArrowRight,
+  AlertTriangle,
 } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
+import TemplatePanel from '@/components/template-panel';
 import {
   Card,
   CardContent,
@@ -85,6 +88,37 @@ function parseSSEChunks(text: string): { event: string; data: string }[] {
   return events;
 }
 
+/** Read SSE stream and invoke callback for each parsed event. */
+async function consumeSSEStream(
+  response: Response,
+  onEvent: (event: string, data: any) => void,
+): Promise<void> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('stream_error');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = parseSSEChunks(buffer);
+    const lastNewline = buffer.lastIndexOf('\n\n');
+    if (lastNewline !== -1) buffer = buffer.slice(lastNewline + 2);
+
+    for (const evt of events) {
+      try {
+        const parsed = JSON.parse(evt.data);
+        onEvent(evt.event, parsed);
+      } catch {
+        // ignore JSON parse errors
+      }
+    }
+  }
+}
+
 /** Render a field value with type-aware formatting */
 function renderFieldValue(value: unknown): string {
   if (value == null) return '\u2014';
@@ -95,6 +129,16 @@ function renderFieldValue(value: unknown): string {
   }
   if (Array.isArray(value)) return value.map(String).join(', ');
   return String(value);
+}
+
+/** Translate merge method to human-readable label */
+function formatMergeMethod(method: string | undefined, t: (key: string) => string): { label: string; isFallback: boolean } {
+  switch (method) {
+    case 'ai': return { label: t('review.mergeMethodAi'), isFallback: false };
+    case 'fallback_strategy': return { label: t('review.mergeMethodFallback'), isFallback: true };
+    case 'single': return { label: t('review.mergeMethodSingle'), isFallback: false };
+    default: return { label: t('review.mergedRecords'), isFallback: false };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +201,13 @@ function PhaseIndicator({ phases }: { phases: PipelinePhase[] }) {
 // Component
 // ---------------------------------------------------------------------------
 
+const INIT_PHASES: PipelinePhase[] = [
+  { key: 'grouping', status: 'pending', detail: '' },
+  { key: 'extracting', status: 'pending', detail: '' },
+  { key: 'aligning', status: 'pending', detail: '' },
+  { key: 'merging', status: 'pending', detail: '' },
+];
+
 export default function ReviewPanel() {
   const t = useT();
   const files = useStore((s) => s.files);
@@ -166,6 +217,9 @@ export default function ReviewPanel() {
   const setProgress = useStore((s) => s.setProgress);
   const setMergedExportData = useStore((s) => s.setMergedExportData);
   const promptSettings = useStore((s) => s.promptSettings);
+  const extractionSnapshot = useStore((s) => s.extractionSnapshot);
+  const setExtractionSnapshot = useStore((s) => s.setExtractionSnapshot);
+  const resetTemplate = useStore((s) => s.resetTemplate);
 
   const abortRef = useRef<AbortController | null>(null);
   const [hasExtracted, setHasExtracted] = useState(false);
@@ -174,14 +228,13 @@ export default function ReviewPanel() {
   // Pipeline result state
   const [pipelineRows, setPipelineRows] = useState<PipelineRow[]>([]);
   const [schemaHeaders, setSchemaHeaders] = useState<string[]>([]);
-  const [phases, setPhases] = useState<PipelinePhase[]>([
-    { key: 'grouping', status: 'pending', detail: '' },
-    { key: 'extracting', status: 'pending', detail: '' },
-    { key: 'aligning', status: 'pending', detail: '' },
-    { key: 'merging', status: 'pending', detail: '' },
-  ]);
+  const [schemaAlignFallback, setSchemaAlignFallback] = useState(false);
+  const [phases, setPhases] = useState<PipelinePhase[]>([...INIT_PHASES]);
 
   const isExtracting = progress.status === 'extracting';
+  const isAligning = progress.status === 'aligning_merging';
+  const isActive = isExtracting || isAligning;
+  const isExtractionDone = progress.status === 'extraction_done';
   const canStart = files.length > 0;
 
   const mergedHeaders = useMemo(() => {
@@ -192,6 +245,30 @@ export default function ReviewPanel() {
     }
     return Array.from(headerSet);
   }, [pipelineRows, schemaHeaders]);
+
+  // Extracted fields from snapshot
+  const extractedFields = useMemo(() => {
+    if (!extractionSnapshot) return [];
+    const fieldSet = new Set<string>();
+    for (const r of extractionSnapshot.results) {
+      if (r.success && r.data) {
+        for (const key of Object.keys(r.data)) {
+          fieldSet.add(key);
+        }
+      }
+    }
+    return Array.from(fieldSet);
+  }, [extractionSnapshot]);
+
+  const extractionSummary = useMemo(() => {
+    if (!extractionSnapshot) return null;
+    const results = extractionSnapshot.results;
+    return {
+      total: results.length,
+      succeeded: results.filter((r) => r.success).length,
+      failed: results.filter((r) => !r.success).length,
+    };
+  }, [extractionSnapshot]);
 
   // Cleanup
   useEffect(() => {
@@ -204,21 +281,17 @@ export default function ReviewPanel() {
   }, []);
 
   // ------------------------------------------------------------------
-  // Start extraction
+  // Phase 1: Extract only (SSE stream to /api/extract)
   // ------------------------------------------------------------------
-  const handleStart = useCallback(async () => {
-    if (isExtracting) return;
+  const handleExtract = useCallback(async () => {
+    if (isActive) return;
 
     clearResults();
     setHasExtracted(false);
     setPipelineRows([]);
     setSchemaHeaders([]);
-    setPhases([
-      { key: 'grouping', status: 'pending', detail: '' },
-      { key: 'extracting', status: 'pending', detail: '' },
-      { key: 'aligning', status: 'pending', detail: '' },
-      { key: 'merging', status: 'pending', detail: '' },
-    ]);
+    setExtractionSnapshot(null);
+    setPhases([...INIT_PHASES]);
 
     const total = files.length;
     setProgress({
@@ -239,8 +312,6 @@ export default function ReviewPanel() {
       })),
       prompts: {
         extraction: promptSettings.extraction || undefined,
-        schemaAlign: promptSettings.schemaAlign || undefined,
-        merge: promptSettings.merge || undefined,
       },
     };
 
@@ -259,27 +330,458 @@ export default function ReviewPanel() {
         throw new Error(t('review.serverError', { code: response.status, text: response.statusText }));
       }
 
+      let completedFiles = 0;
+      const totalFiles = total;
+      let groupsDone = false;
+      let extractedCount = 0;
+
+      await consumeSSEStream(response, (event, parsed) => {
+        switch (event) {
+          case 'phase': {
+            const phase = parsed.phase as string;
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === phase
+                  ? { ...p, status: 'active', detail: '' }
+                  : p,
+              ),
+            );
+            break;
+          }
+
+          case 'grouping_done': {
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === 'grouping'
+                  ? { ...p, status: 'done', detail: `${parsed.groups?.length ?? 0}` }
+                  : p,
+              ),
+            );
+            groupsDone = true;
+            break;
+          }
+
+          case 'file_retry': {
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === 'extracting'
+                  ? { ...p, detail: `(${completedFiles + 1}/${totalFiles}) retry ${parsed.attempt}` }
+                  : p,
+              ),
+            );
+            break;
+          }
+
+          case 'file_start': {
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === 'extracting'
+                  ? { ...p, status: 'active', detail: `(${completedFiles + 1}/${totalFiles})` }
+                  : p,
+              ),
+            );
+            setProgress({ currentFile: parsed.fileName ?? '' });
+            break;
+          }
+
+          case 'file_complete': {
+            completedFiles++;
+            extractedCount += parsed.success ? 1 : 0;
+            setProgress({ completedFiles });
+            if (completedFiles >= totalFiles && groupsDone) {
+              setPhases((prev) =>
+                prev.map((p) =>
+                  p.key === 'extracting'
+                    ? { ...p, status: 'done', detail: `(${extractedCount}/${totalFiles})` }
+                    : p,
+                ),
+              );
+            }
+            addResult({
+              fileId: String(parsed.fileId ?? ''),
+              fileName: parsed.fileName ?? '',
+              success: parsed.success ?? false,
+              data: parsed.data,
+              error: parsed.error,
+            });
+            break;
+          }
+
+          case 'extraction_done': {
+            setExtractionSnapshot({
+              results: parsed.results,
+              groups: parsed.groups,
+            });
+            setPhases((prev) =>
+              prev.map((p) =>
+                (p.key === 'grouping' || p.key === 'extracting')
+                  ? { ...p, status: 'done' }
+                  : p,
+              ),
+            );
+            setProgress({ status: 'extraction_done' });
+            setHasExtracted(true);
+            break;
+          }
+
+          case 'error': {
+            setPhases((prev) =>
+              prev.map((p) => {
+                if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
+                return p;
+              }),
+            );
+            setProgress({ status: 'error' });
+            addResult({
+              fileId: 'system',
+              fileName: t('review.systemError'),
+              success: false,
+              error: parsed.message ?? t('review.unknownError'),
+            });
+            setHasExtracted(true);
+            break;
+          }
+        }
+      });
+
+      // Stream ended without explicit extraction_done — build fallback snapshot
+      if (useStore.getState().progress.status === 'extracting') {
+        setPhases((prev) =>
+          prev.map((p) => (p.status === 'active' ? { ...p, status: 'done' } : p)),
+        );
+        // Build snapshot from accumulated results so user isn't stuck
+        const currentResults = useStore.getState().results;
+        if (currentResults.length > 0) {
+          setExtractionSnapshot({
+            results: currentResults.map((r) => ({
+              fileId: r.fileId,
+              fileName: r.fileName,
+              groupId: 'fallback',
+              success: r.success,
+              data: r.data,
+              error: r.error,
+            })),
+            groups: [{ groupId: 'fallback', groupKey: 'All Files', fileCount: currentResults.length }],
+          });
+          setProgress({ status: 'extraction_done' });
+        } else {
+          setProgress({ status: 'error' });
+        }
+        setHasExtracted(true);
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        setProgress({ status: 'idle', currentFile: '' });
+        setPhases((prev) =>
+          prev.map((p) => {
+            if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
+            return p;
+          }),
+        );
+      } else {
+        setPhases((prev) =>
+          prev.map((p) => {
+            if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
+            return p;
+          }),
+        );
+        setProgress({ status: 'error' });
+        const errorMessage =
+          err instanceof Error ? err.message : t('review.unknownError');
+        addResult({
+          fileId: 'system',
+          fileName: t('review.systemError'),
+          success: false,
+          error: errorMessage,
+        });
+        setHasExtracted(true);
+      }
+    } finally {
+      abortRef.current = null;
+    }
+  }, [
+    files,
+    isActive,
+    clearResults,
+    setProgress,
+    addResult,
+    setExtractionSnapshot,
+    t,
+  ]);
+
+  // ------------------------------------------------------------------
+  // Retry failed files only (SSE stream to /api/extract)
+  // ------------------------------------------------------------------
+  const handleRetryFailed = useCallback(async () => {
+    const snapshot = useStore.getState().extractionSnapshot;
+    const allFiles = useStore.getState().files;
+    if (!snapshot) return;
+
+    const failedResults = snapshot.results.filter((r) => !r.success);
+    if (failedResults.length === 0) return;
+
+    const failedFileIds = new Set(failedResults.map((r) => r.fileId));
+    const filesToRetry = allFiles.filter((f) => failedFileIds.has(f.id));
+    if (filesToRetry.length === 0) return;
+
+    // Reset extract phases to show retry progress
+    setPhases((prev) =>
+      prev.map((p) =>
+        (p.key === 'grouping' || p.key === 'extracting')
+          ? { ...p, status: 'pending', detail: '' }
+          : p,
+      ),
+    );
+    setProgress({
+      totalFiles: filesToRetry.length,
+      completedFiles: 0,
+      currentFile: '',
+      status: 'extracting',
+    });
+
+    const body = {
+      files: filesToRetry.map((f) => ({
+        id: f.id,
+        name: f.name,
+        size: f.size,
+        type: f.type,
+        content: f.content,
+        dataUrl: f.dataUrl,
+      })),
+      prompts: {
+        extraction: useStore.getState().promptSettings.extraction || undefined,
+      },
+    };
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const response = await fetch('/api/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(t('review.serverError', { code: response.status, text: response.statusText }));
+      }
+
+      let completedFiles = 0;
+      const totalFiles = filesToRetry.length;
+      let extractedCount = 0;
+      const retryResults: Array<{
+        fileId: string;
+        fileName: string;
+        groupId: string;
+        success: boolean;
+        data?: Record<string, unknown>;
+        error?: string;
+      }> = [];
+
+      await consumeSSEStream(response, (event, parsed) => {
+        switch (event) {
+          case 'phase':
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === parsed.phase
+                  ? { ...p, status: 'active', detail: '' }
+                  : p,
+              ),
+            );
+            break;
+
+          case 'file_retry':
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === 'extracting'
+                  ? { ...p, detail: `(${completedFiles + 1}/${totalFiles}) retry ${parsed.attempt}` }
+                  : p,
+              ),
+            );
+            break;
+
+          case 'file_start':
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === 'extracting'
+                  ? { ...p, status: 'active', detail: `(${completedFiles + 1}/${totalFiles})` }
+                  : p,
+              ),
+            );
+            setProgress({ currentFile: parsed.fileName ?? '' });
+            break;
+
+          case 'file_complete':
+            completedFiles++;
+            extractedCount += parsed.success ? 1 : 0;
+            setProgress({ completedFiles });
+            if (completedFiles >= totalFiles) {
+              setPhases((prev) =>
+                prev.map((p) =>
+                  p.key === 'extracting' || p.key === 'grouping'
+                    ? { ...p, status: 'done', detail: `(${extractedCount}/${totalFiles})` }
+                    : p,
+                ),
+              );
+            }
+            retryResults.push({
+              fileId: String(parsed.fileId ?? ''),
+              fileName: parsed.fileName ?? '',
+              groupId: parsed.groupId ?? '',
+              success: parsed.success ?? false,
+              data: parsed.data,
+              error: parsed.error,
+            });
+            break;
+
+          case 'extraction_done': {
+            // Merge retry results into existing snapshot, preserving original groupIds
+            const existing = useStore.getState().extractionSnapshot;
+            if (existing) {
+              const mergedResults = existing.results.map((r) => {
+                const retryResult = retryResults.find((nr) => nr.fileName === r.fileName);
+                if (retryResult) {
+                  if (retryResult.success) {
+                    return { ...retryResult, groupId: r.groupId };
+                  }
+                  return { ...r, error: retryResult.error };
+                }
+                return r;
+              });
+              setExtractionSnapshot({
+                results: mergedResults,
+                groups: existing.groups,
+              });
+            }
+            setPhases((prev) =>
+              prev.map((p) =>
+                (p.key === 'grouping' || p.key === 'extracting')
+                  ? { ...p, status: 'done' }
+                  : p,
+              ),
+            );
+            setProgress({ status: 'extraction_done' });
+            break;
+          }
+
+          case 'error':
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.status === 'active' ? { ...p, status: 'pending', detail: '' } : p,
+              ),
+            );
+            setProgress({ status: 'extraction_done' });
+            break;
+        }
+      });
+
+      // Stream ended without extraction_done — merge whatever we got
+      if (useStore.getState().progress.status === 'extracting') {
+        const existing = useStore.getState().extractionSnapshot;
+        if (existing && retryResults.length > 0) {
+          const mergedResults = existing.results.map((r) => {
+            const retryResult = retryResults.find((nr) => nr.fileName === r.fileName);
+            if (retryResult) {
+              if (retryResult.success) return { ...retryResult, groupId: r.groupId };
+              return { ...r, error: retryResult.error };
+            }
+            return r;
+          });
+          setExtractionSnapshot({ results: mergedResults, groups: existing.groups });
+        }
+        setPhases((prev) =>
+          prev.map((p) => (p.status === 'active' ? { ...p, status: 'done' } : p)),
+        );
+        setProgress({ status: 'extraction_done' });
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        // no-op — handleAbort sets state
+      } else {
+        setProgress({ status: 'extraction_done', currentFile: '' });
+      }
+      setPhases((prev) =>
+        prev.map((p) =>
+          p.status === 'active' ? { ...p, status: 'pending', detail: '' } : p,
+        ),
+      );
+    } finally {
+      abortRef.current = null;
+    }
+  }, [t, setProgress, setExtractionSnapshot]);
+
+  // ------------------------------------------------------------------
+  // Phase 2-3: Align + Merge (SSE stream to /api/align-merge)
+  // ------------------------------------------------------------------
+  const handleAlignMerge = useCallback(async () => {
+    const snapshot = useStore.getState().extractionSnapshot;
+    if (!snapshot) return;
+
+    setPipelineRows([]);
+    setSchemaHeaders([]);
+    setSchemaAlignFallback(false);
+
+    // Ensure extraction phases are shown as done
+    setPhases((prev) =>
+      prev.map((p) =>
+        (p.key === 'grouping' || p.key === 'extracting')
+          ? { ...p, status: 'done' }
+          : { ...p, status: 'pending', detail: '' },
+      ),
+    );
+
+    setProgress({ status: 'aligning_merging' });
+
+    const currentColumns = useStore.getState().templateColumns;
+    const currentPromptSettings = useStore.getState().promptSettings;
+
+    const body = {
+      extractionData: snapshot.results.map((r) => ({
+        fileId: r.fileId,
+        fileName: r.fileName,
+        groupId: r.groupId,
+        success: r.success,
+        data: r.data,
+        error: r.error,
+      })),
+      groups: snapshot.groups.map((g) => ({ groupId: g.groupId, groupKey: g.groupKey })),
+      ...(currentColumns.length > 0 ? { columns: currentColumns } : {}),
+      prompts: {
+        schemaAlign: currentPromptSettings.schemaAlign || undefined,
+        merge: currentPromptSettings.merge || undefined,
+      },
+    };
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const response = await fetch('/api/align-merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(t('review.serverError', { code: response.status, text: response.statusText }));
+      }
+
       const reader = response.body?.getReader();
       if (!reader) throw new Error(t('review.streamError'));
 
       const decoder = new TextDecoder();
       let buffer = '';
-
-      // Local counters for progress tracking
-      let completedFiles = 0;
-      let totalFiles = total;
-      let groupsDone = false;
-      const groupLabels: string[] = [];
       let mergedGroups = 0;
-      let totalGroups = 0;
-      let extractedCount = 0;
+      const totalGroups = snapshot.groups.length;
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-
         const events = parseSSEChunks(buffer);
         const lastNewline = buffer.lastIndexOf('\n\n');
         if (lastNewline !== -1) {
@@ -297,74 +799,22 @@ export default function ReviewPanel() {
                   prev.map((p) =>
                     p.key === phase
                       ? { ...p, status: 'active', detail: '' }
-                      : p.status === 'active'
-                        ? { ...p, status: 'active' }
-                        : p,
-                  ),
-                );
-                break;
-              }
-
-              case 'grouping_done': {
-                totalGroups = parsed.groups?.length ?? 0;
-                for (const g of parsed.groups ?? []) {
-                  groupLabels.push(g.label);
-                }
-                setPhases((prev) =>
-                  prev.map((p) =>
-                    p.key === 'grouping'
-                      ? { ...p, status: 'done', detail: `${totalGroups}` }
-                      : p,
-                  ),
-                );
-                groupsDone = true;
-                break;
-              }
-
-              case 'file_retry': {
-                // Update extracting phase detail to show retry info
-                setPhases((prev) =>
-                  prev.map((p) =>
-                    p.key === 'extracting'
-                      ? { ...p, detail: `(${completedFiles + 1}/${totalFiles}) retry ${parsed.attempt}` }
                       : p,
                   ),
                 );
                 break;
               }
 
-              case 'file_start': {
+              case 'schema_ready': {
+                setSchemaHeaders(parsed.headers ?? []);
+                if (parsed.aiFailed) setSchemaAlignFallback(true);
                 setPhases((prev) =>
                   prev.map((p) =>
-                    p.key === 'extracting'
-                      ? { ...p, status: 'active', detail: `(${completedFiles + 1}/${totalFiles})` }
+                    p.key === 'aligning'
+                      ? { ...p, status: 'done', detail: `${parsed.headers?.length ?? 0}` }
                       : p,
                   ),
                 );
-                setProgress({ currentFile: parsed.fileName ?? '' });
-                break;
-              }
-
-              case 'file_complete': {
-                completedFiles++;
-                extractedCount += parsed.success ? 1 : 0;
-                setProgress({ completedFiles });
-                if (completedFiles >= totalFiles && groupsDone) {
-                  setPhases((prev) =>
-                    prev.map((p) =>
-                      p.key === 'extracting'
-                        ? { ...p, status: 'done', detail: `(${extractedCount}/${totalFiles})` }
-                        : p,
-                    ),
-                  );
-                }
-                addResult({
-                  fileId: String(parsed.fileId ?? ''),
-                  fileName: parsed.fileName ?? '',
-                  success: parsed.success ?? false,
-                  data: parsed.data,
-                  error: parsed.error,
-                });
                 break;
               }
 
@@ -381,9 +831,6 @@ export default function ReviewPanel() {
               }
 
               case 'group_merged': {
-                const method = parsed.mergeMethod ?? '';
-                const count = parsed.mergedCount ?? 0;
-                const label = parsed.groupKey ?? '';
                 setPhases((prev) =>
                   prev.map((p) =>
                     p.key === 'merging'
@@ -395,16 +842,6 @@ export default function ReviewPanel() {
                           }),
                         }
                       : p,
-                  ),
-                );
-                break;
-              }
-
-              case 'schema_ready': {
-                setSchemaHeaders(parsed.headers ?? []);
-                setPhases((prev) =>
-                  prev.map((p) =>
-                    p.key === 'aligning' ? { ...p, status: 'done', detail: `${parsed.headers?.length ?? 0}` } : p,
                   ),
                 );
                 break;
@@ -458,25 +895,21 @@ export default function ReviewPanel() {
               }
             }
           } catch {
-            // ignore JSON parse errors for individual events
+            // ignore JSON parse errors
           }
         }
       }
 
-      if (useStore.getState().progress.status === 'extracting') {
+      // Stream ended without explicit all_done
+      if (useStore.getState().progress.status === 'aligning_merging') {
         setPhases((prev) => prev.map((p) => ({ ...p, status: 'done' })));
         setProgress({ status: 'done' });
         setHasExtracted(true);
       }
     } catch (err: unknown) {
+      // AbortError is handled by handleAbort, skip double processing
       if (err instanceof Error && err.name === 'AbortError') {
-        setProgress({ status: 'idle', currentFile: '' });
-        setPhases((prev) =>
-          prev.map((p) => {
-            if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
-            return p;
-          }),
-        );
+        // no-op
       } else {
         setPhases((prev) =>
           prev.map((p) => {
@@ -498,16 +931,7 @@ export default function ReviewPanel() {
     } finally {
       abortRef.current = null;
     }
-  }, [
-    files,
-    isExtracting,
-    clearResults,
-    setProgress,
-    addResult,
-    setMergedExportData,
-    progress.status,
-    t,
-  ]);
+  }, [t, addResult, setMergedExportData, setProgress]);
 
   // ------------------------------------------------------------------
   // Abort
@@ -517,7 +941,19 @@ export default function ReviewPanel() {
       abortRef.current.abort();
       abortRef.current = null;
     }
-    setProgress({ status: 'idle', currentFile: '' });
+    const currentStatus = useStore.getState().progress.status;
+    if (currentStatus === 'aligning_merging') {
+      // Return to extraction_done so user can retry with different template
+      setProgress({ status: 'extraction_done', currentFile: '' });
+    } else {
+      setProgress({ status: 'idle', currentFile: '' });
+    }
+    setPhases((prev) =>
+      prev.map((p) => {
+        if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
+        return p;
+      }),
+    );
   }, [setProgress]);
 
   // ------------------------------------------------------------------
@@ -536,36 +972,32 @@ export default function ReviewPanel() {
       <CardContent className="flex flex-col gap-6">
         {/* ---------- Start / Stop Buttons ---------- */}
         <div className="flex flex-wrap items-center gap-3">
-          {isExtracting ? (
+          {isActive ? (
             <Button variant="destructive" size="lg" onClick={handleAbort}>
               <Square className="size-4" />
               {t('review.stop')}
             </Button>
           ) : (
-            <>
-              <Button
-                size="lg"
-                disabled={!canStart}
-                onClick={handleStart}
-              >
-                <Play className="size-4" />
-                {hasExtracted ? t('review.restart') : t('review.start')}
-              </Button>
-              {hasExtracted && (
-                <Button
-                  variant="outline"
-                  size="lg"
-                  onClick={handleStart}
-                  disabled={!canStart}
-                >
+            <Button
+              size="lg"
+              disabled={!canStart}
+              onClick={handleExtract}
+            >
+              {hasExtracted ? (
+                <>
                   <RotateCcw className="size-4" />
                   {t('review.restart')}
-                </Button>
+                </>
+              ) : (
+                <>
+                  <Play className="size-4" />
+                  {t('review.start')}
+                </>
               )}
-            </>
+            </Button>
           )}
 
-          {!canStart && !isExtracting && (
+          {!canStart && !isActive && (
             <p className="text-muted-foreground text-sm">
               {t('review.hintNoFiles')}
             </p>
@@ -573,8 +1005,16 @@ export default function ReviewPanel() {
         </div>
 
         {/* ---------- Pipeline Phase Indicator ---------- */}
-        {(isExtracting || (hasExtracted && phases.some((p) => p.status !== 'pending'))) && (
+        {(isActive || hasExtracted || isExtractionDone) && (
           <PhaseIndicator phases={phases} />
+        )}
+
+        {/* ---------- Schema alignment fallback warning ---------- */}
+        {schemaAlignFallback && (
+          <div className="flex items-center gap-2 text-sm text-amber-600">
+            <AlertTriangle className="size-4 shrink-0" />
+            <span>{t('pipeline.schemaAlignFallback')}</span>
+          </div>
         )}
 
         {/* ---------- File-level progress during extraction ---------- */}
@@ -590,7 +1030,7 @@ export default function ReviewPanel() {
         )}
 
         {/* ---------- Status ---------- */}
-        {progress.status === 'done' && !isExtracting && (
+        {progress.status === 'done' && !isActive && (
           <div className="flex items-center gap-2 text-sm text-emerald-600">
             <CheckCircle2 className="size-4" />
             <span>
@@ -602,15 +1042,109 @@ export default function ReviewPanel() {
             </span>
           </div>
         )}
-        {progress.status === 'error' && !isExtracting && (
+        {progress.status === 'error' && !isActive && (
           <div className="flex items-center gap-2 text-sm text-destructive">
             <XCircle className="size-4" />
             {t('review.error')}
           </div>
         )}
 
-        {/* ---------- Results ---------- */}
-        {(pipelineRows.length > 0 || hasExtracted) && (
+        {/* ---------- Extraction Done: Results Preview + Template ---------- */}
+        {isExtractionDone && extractionSummary && (
+          <div className="flex flex-col gap-4">
+            <Separator />
+
+            {/* Extraction summary + retry button */}
+            <div className="flex items-center gap-2 text-sm text-emerald-600">
+              <CheckCircle2 className="size-4" />
+              <span>
+                {t('review.extractionSummary', {
+                  total: extractionSummary.total,
+                  succeeded: extractionSummary.succeeded,
+                  failed: extractionSummary.failed,
+                })}
+              </span>
+              {extractionSummary.failed > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="ml-2 h-7 text-xs"
+                  disabled={isActive}
+                  onClick={handleRetryFailed}
+                >
+                  <RotateCcw className="size-3 mr-1" />
+                  {t('review.retryFailed', { count: extractionSummary.failed })}
+                </Button>
+              )}
+            </div>
+
+            {/* Extracted fields */}
+            {extractedFields.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-muted-foreground">
+                  {t('review.extractedFields', { count: extractedFields.length })}
+                </span>
+                <div className="flex flex-wrap gap-1">
+                  {extractedFields.map((field) => (
+                    <Badge key={field} variant="outline" className="text-xs">
+                      {field}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Per-file extraction status */}
+            <div className="max-h-[200px] overflow-auto rounded-md border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/50 text-left text-muted-foreground">
+                    <th className="px-3 py-1.5 w-8" />
+                    <th className="px-3 py-1.5">{t('review.fileName')}</th>
+                    <th className="px-3 py-1.5 w-20 text-right">{t('review.fieldsCount', { count: 'N' }).replace(/\d+/, '')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {extractionSnapshot?.results.map((r) => (
+                    <tr key={r.fileId} className="border-b last:border-0">
+                      <td className="px-3 py-1">
+                        {r.success ? (
+                          <CheckCircle2 className="size-3.5 text-emerald-600" />
+                        ) : (
+                          <XCircle className="size-3.5 text-destructive" />
+                        )}
+                      </td>
+                      <td className="px-3 py-1">{r.fileName}</td>
+                      <td className="px-3 py-1 text-right text-muted-foreground">
+                        {r.success && r.data ? Object.keys(r.data).length : '\u2014'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Arrow indicator */}
+            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+              <ArrowRight className="size-4" />
+              {t('review.configureTemplate')}
+            </div>
+
+            {/* Template configuration (embedded) */}
+            <TemplatePanel
+              embedded
+              extractionData={extractionSnapshot?.results}
+              onConfirm={() => handleAlignMerge()}
+              onSkip={() => {
+                resetTemplate();
+                handleAlignMerge();
+              }}
+            />
+          </div>
+        )}
+
+        {/* ---------- Final Results (after align-merge) ---------- */}
+        {(pipelineRows.length > 0 || (hasExtracted && progress.status === 'done')) && (
           <div className="flex flex-col gap-4">
             <Separator />
 
@@ -702,7 +1236,7 @@ export default function ReviewPanel() {
             )}
 
             {/* ---- No results ---- */}
-            {hasExtracted && pipelineRows.length === 0 && (
+            {pipelineRows.length === 0 && (
               <p className="text-muted-foreground text-sm text-center py-8">
                 {t('review.noResults')}
               </p>
@@ -755,12 +1289,15 @@ function PipelineResultCard({ row, headers }: PipelineResultCardProps) {
           )}
           <CheckCircle2 className="text-emerald-600 size-4" />
           {row.label}
-          {row.isMerged && (
-            <Badge variant="secondary" className="ml-auto gap-1">
-              <GitMerge className="size-3" />
-              {row.mergeMethod || t('review.mergedRecords')}
-            </Badge>
-          )}
+          {row.isMerged && (() => {
+            const { label, isFallback } = formatMergeMethod(row.mergeMethod, t);
+            return (
+              <Badge variant={isFallback ? 'outline' : 'secondary'} className={isFallback ? 'ml-auto gap-1 text-amber-600 border-amber-300' : 'ml-auto gap-1'}>
+                <GitMerge className="size-3" />
+                {label}
+              </Badge>
+            );
+          })()}
           {!row.isMerged && (
             <Badge variant="secondary" className="ml-auto">
               {t('review.fieldsCount', { count: entries.length })}

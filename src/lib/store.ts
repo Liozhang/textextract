@@ -9,6 +9,13 @@ import { detectLocale, type Locale } from './i18n';
 
 export type WizardStep = 'upload' | 'review' | 'export';
 
+export interface ColumnConstraint {
+  key: string;
+  type: 'string' | 'number' | 'boolean';
+  description: string;
+  example?: string;
+}
+
 export interface AppFile {
   id: string;
   name: string;
@@ -35,7 +42,7 @@ export interface ExtractionResultItem {
   error?: string;
 }
 
-export type ExtractionStatus = 'idle' | 'extracting' | 'done' | 'error';
+export type ExtractionStatus = 'idle' | 'extracting' | 'extraction_done' | 'aligning_merging' | 'done' | 'error';
 
 export interface ExtractionProgress {
   totalFiles: number;
@@ -103,6 +110,31 @@ export interface AppState {
   promptSettings: PromptSettings;
   setPromptSettings: (phase: keyof PromptSettings, value: string) => void;
   resetPromptSettings: () => void;
+
+  // Template columns
+  templateColumns: ColumnConstraint[];
+  templatePrompt: string;
+  templateGenerated: boolean;
+  setTemplateGenerated: (val: boolean) => void;
+  setTemplateColumns: (columns: ColumnConstraint[]) => void;
+  setTemplatePrompt: (prompt: string) => void;
+  resetTemplate: () => void;
+
+  // Extraction snapshot (transient, not persisted — used between extract and align-merge)
+  extractionSnapshot: {
+    results: Array<{
+      fileId: string;
+      fileName: string;
+      groupId: string;
+      success: boolean;
+      data?: Record<string, unknown>;
+      imageDataUrl?: string;
+      error?: string;
+    }>;
+    groups: Array<{ groupId: string; groupKey: string; fileCount: number }>;
+  } | null;
+  setExtractionSnapshot: (snapshot: AppState['extractionSnapshot']) => void;
+  clearExtractionSnapshot: () => void;
 
   // Merged export data (synced from review panel after backend pipeline)
   mergedExportData: MergedExportRow[];
@@ -202,6 +234,21 @@ export const useStore = create<AppState>()(
       resetPromptSettings: () =>
         set({ promptSettings: { ...DEFAULT_PROMPT_SETTINGS } }),
 
+      // --- Template Columns ---
+      templateColumns: [],
+      templatePrompt: '',
+      templateGenerated: false,
+      setTemplateGenerated: (val) => set({ templateGenerated: val }),
+      setTemplateColumns: (columns) => set({ templateColumns: columns }),
+      setTemplatePrompt: (prompt) => set({ templatePrompt: prompt }),
+      resetTemplate: () =>
+        set({ templateColumns: [], templatePrompt: '', templateGenerated: false }),
+
+      // --- Extraction Snapshot (transient) ---
+      extractionSnapshot: null,
+      setExtractionSnapshot: (snapshot) => set({ extractionSnapshot: snapshot }),
+      clearExtractionSnapshot: () => set({ extractionSnapshot: null }),
+
       // --- Merged export data ---
       mergedExportData: [],
       setMergedExportData: (rows) => set({ mergedExportData: rows }),
@@ -221,6 +268,10 @@ export const useStore = create<AppState>()(
           progress: { ...DEFAULT_PROGRESS },
           exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
           promptSettings: { ...DEFAULT_PROMPT_SETTINGS },
+          templateColumns: [],
+          templatePrompt: '',
+          templateGenerated: false,
+          extractionSnapshot: null,
           selectedField: null,
           selectedFileId: null,
           mergedExportData: [],

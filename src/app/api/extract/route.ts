@@ -5,18 +5,13 @@ import sharp from 'sharp'
 
 import { parseJsonResponse } from '@/lib/pipeline/json-parser'
 import { groupFilesByPrefix, findGroupForFile } from '@/lib/pipeline/file-grouper'
-import { mergeGroupWithAI } from '@/lib/pipeline/merge-agent'
-import { alignSchemaWithAI, alignSchema } from '@/lib/pipeline/schema-aligner'
-import { collectFieldPaths, applyFlattenedSchemaToResults, buildUnifiedSchemaFromMerged } from '@/lib/pipeline/schema-flattener'
 import {
   EXTRACTION_SYSTEM_MESSAGE,
-  SCHEMA_ALIGN_SYSTEM_MESSAGE,
-  MERGE_SYSTEM_MESSAGE,
   TEXT_EXTRACTION_PREFIX,
 } from '@/lib/pipeline/prompts'
-import { strategyMerge, isReasoningModel } from '@/lib/merge-utils'
-import { normalizeAllResults } from '@/lib/pipeline/post-normalizer'
-import type { PerFileResult, AlignedPerFileResult, MergedRecord } from '@/lib/pipeline/types'
+import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
+import { normalizePostExtraction } from '@/lib/pipeline/post-normalizer'
+import type { PerFileResult } from '@/lib/pipeline/types'
 
 type OpenAIError = Error & { status?: number }
 
@@ -68,8 +63,6 @@ interface ExtractRequestBody {
   imageCompressThreshold?: number
   prompts?: {
     extraction?: string
-    schemaAlign?: string
-    merge?: string
   }
 }
 
@@ -198,86 +191,6 @@ const FLATTEN_RETRY_SYSTEM = `你上一次的输出包含了嵌套对象或数�
 5. 定量指标保留数值和单位在一个字符串中（如 "5.0 ×10⁹/L"）
 6. 仅输出纯 JSON，不要任何解释性文本或代码块标记`
 
-function buildFlattenRetryUserMessage(data: Record<string, unknown>): string {
-  return `你上次输出的以下数据包含嵌套对象或数组，请将其完全展平后重新输出：\n\n${JSON.stringify(data)}`
-}
-
-// ─── Date normalization ─────────────────────────────────────────────────────
-
-function normalizeDate(value: unknown): string {
-  const s = String(value ?? '').trim()
-  if (!s) return s
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-  const cn = s.match(/(\d{4})年(\d{1,2})月(\d{1,2})日?/)
-  if (cn) return `${cn[1]}-${cn[2].padStart(2, '0')}-${cn[3].padStart(2, '0')}`
-  const parts = s.split(/[\/\-\.]/).map(Number)
-  if (parts.length === 3 && parts.every((p) => !isNaN(p))) {
-    if (parts[0] > 1000) return `${parts[0]}-${String(parts[1]).padStart(2, '0')}-${String(parts[2]).padStart(2, '0')}`
-    if (parts[2] > 1000) return `${parts[2]}-${String(parts[1]).padStart(2, '0')}-${String(parts[0]).padStart(2, '0')}`
-  }
-  return s
-}
-
-/** Apply date normalization to extracted data. Measurement strings are kept as-is (flat output). */
-function normalizeExtractedData(data: Record<string, unknown>): Record<string, unknown> {
-  const normalized: Record<string, unknown> = {}
-  for (const [key, val] of Object.entries(data)) {
-    const strVal = typeof val === 'string' ? val.trim() : ''
-    if (strVal && (/\d{4}[年/\-]\d{1,2}[月/\-]\d{1,2}/.test(strVal) || /^\d{4}-\d{2}-\d{2}$/.test(strVal))) {
-      normalized[key] = normalizeDate(val)
-    } else {
-      normalized[key] = val
-    }
-  }
-  return normalized
-}
-
-// ─── Merge fallback helper ──────────────────────────────────────────────────
-
-async function mergeGroupWithFallback(
-  openai: OpenAI,
-  model: string,
-  group: { groupId: string; groupKey: string },
-  groupResults: AlignedPerFileResult[],
-  abortSignal: AbortSignal,
-  mergePrompt?: string,
-): Promise<MergedRecord> {
-  const successful = groupResults.filter((r) => r.success && r.data)
-
-  // Single file or all failed → pass through
-  if (successful.length <= 1) {
-    const r = groupResults.find((r) => r.success) || groupResults[0]
-    return {
-      groupId: group.groupId,
-      groupKey: group.groupKey,
-      data: r?.data || {},
-      imageDataUrl: r?.imageDataUrl,
-      sourceFileNames: successful.length > 0 ? successful.map((r) => r.fileName) : [r?.fileName || ''],
-      mergedCount: successful.length,
-      mergeMethod: 'single',
-      conflicts: [],
-    }
-  }
-
-  try {
-    return await mergeGroupWithAI(openai, model, group.groupKey, group.groupId, successful, abortSignal, mergePrompt)
-  } catch {
-    // Fallback to strategy merge
-    const { data } = strategyMerge(successful.map(r => ({ data: r.data! as Record<string, unknown> })), 'first_wins')
-    const imageResult = successful.find((r) => r.imageDataUrl)
-    return {
-      groupId: group.groupId,
-      groupKey: group.groupKey,
-      data,
-      imageDataUrl: imageResult?.imageDataUrl,
-      sourceFileNames: successful.map((r) => r.fileName),
-      mergedCount: successful.length,
-      mergeMethod: 'fallback_strategy',
-      conflicts: [],
-    }
-  }
-}
-
 // ─── POST handler ────────────────────────────────────────────────────────────
 
 const MAX_REQUEST_SIZE = 100 * 1024 * 1024 // 100MB
@@ -302,10 +215,8 @@ export async function POST(request: NextRequest) {
       prompts: customPrompts,
     } = body
 
-    // Resolve prompts: custom overrides or defaults
+    // Resolve prompt: custom override or default
     const extractionPrompt = customPrompts?.extraction || EXTRACTION_SYSTEM_MESSAGE
-    const schemaAlignPrompt = customPrompts?.schemaAlign || SCHEMA_ALIGN_SYSTEM_MESSAGE
-    const mergePrompt = customPrompts?.merge || MERGE_SYSTEM_MESSAGE
 
     // Compute per-call timeout scaled to total request payload size.
     // Base: API_TIMEOUT env (default 120s) + 15s per MB of total body (covers
@@ -428,7 +339,7 @@ export async function POST(request: NextRequest) {
             if (isReasoningModel(apiSettings.model)) {
               requestOptions.reasoning_effort = 'low'
             }
-            if (!apiSettings.model.toLowerCase().startsWith('o')) {
+            if (supportsJsonResponseFormat(apiSettings.model)) {
               requestOptions.response_format = { type: 'json_object' }
             }
 
@@ -438,6 +349,9 @@ export async function POST(request: NextRequest) {
               try {
                 if (attempt > 1) {
                   send('file_retry', { fileId, fileName, attempt })
+                  // Exponential backoff: 1s, 2s, 4s
+                  const delayMs = Math.min(4000, 1000 * Math.pow(2, attempt - 2))
+                  await new Promise((resolve) => setTimeout(resolve, delayMs))
                 }
 
                 // Each retry uses a fresh messages array (no conversation context)
@@ -466,34 +380,36 @@ export async function POST(request: NextRequest) {
                 // Validate flat structure — retry with flatten prompt if nested
                 let finalData = data
                 if (!isFlat(data)) {
-                  const flatMessages: OpenAI.ChatCompletionMessageParam[] = [
-                    ...baseMessages,
-                    { role: 'assistant', content: fullContent },
-                    { role: 'system', content: FLATTEN_RETRY_SYSTEM },
-                    { role: 'user', content: buildFlattenRetryUserMessage(data) },
-                  ]
-                  const flatCompletion = await openai.chat.completions.create(
-                    { ...requestOptions, messages: flatMessages } as any,
-                    { signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]) },
-                  )
-                  let flatContent = ''
-                  if (Symbol.asyncIterator in Object(flatCompletion)) {
-                    for await (const chunk of flatCompletion as unknown as AsyncIterable<OpenAI.ChatCompletionChunk>) {
-                      const delta = chunk.choices?.[0]?.delta?.content
-                      if (delta) flatContent += delta
+                  try {
+                    const flatMessages: OpenAI.ChatCompletionMessageParam[] = [
+                      { role: 'system', content: FLATTEN_RETRY_SYSTEM },
+                      {
+                        role: 'user',
+                        content: `以下是需要展平的 JSON 数据：\n\n${JSON.stringify(data)}\n\n请按照上述规则输出完全扁平化的 JSON。`,
+                      },
+                    ]
+                    const flatCompletion = await openai.chat.completions.create(
+                      { ...requestOptions, messages: flatMessages } as any,
+                      { signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]) },
+                    )
+                    let flatContent = ''
+                    if (Symbol.asyncIterator in Object(flatCompletion)) {
+                      for await (const chunk of flatCompletion as unknown as AsyncIterable<OpenAI.ChatCompletionChunk>) {
+                        const delta = chunk.choices?.[0]?.delta?.content
+                        if (delta) flatContent += delta
+                      }
+                    } else {
+                      const msg = (flatCompletion as unknown as OpenAI.ChatCompletion).choices?.[0]?.message
+                      flatContent = msg?.content || ''
                     }
-                  } else {
-                    const msg = (flatCompletion as unknown as OpenAI.ChatCompletion).choices?.[0]?.message
-                    flatContent = msg?.content || ''
+                    const flatParsed = parseJsonResponse(flatContent)
+                    if (flatParsed && typeof flatParsed === 'object' && !Array.isArray(flatParsed) && isFlat(flatParsed as Record<string, unknown>)) {
+                      finalData = flatParsed as Record<string, unknown>
+                    }
+                  } catch {
+                    // Flatten retry failed — proceed with original data (Phase 2 schema-flattener handles nested structures)
                   }
-                  const flatParsed = parseJsonResponse(flatContent)
-                  if (flatParsed && typeof flatParsed === 'object' && !Array.isArray(flatParsed) && isFlat(flatParsed as Record<string, unknown>)) {
-                    finalData = flatParsed as Record<string, unknown>
-                  }
-                  // If flatten retry also fails, proceed with original data (Phase 2 will handle it)
                 }
-
-                const normalizedData = normalizeExtractedData(finalData)
 
                 let imageDataUrl: string | undefined
                 if (file.dataUrl && /^data:image\//.test(file.dataUrl)) {
@@ -505,16 +421,19 @@ export async function POST(request: NextRequest) {
                   fileName,
                   groupId: group.groupId,
                   success: true,
-                  data: normalizedData,
+                  data: finalData,
                   imageDataUrl,
                 })
+
+                // Normalize each result immediately after extraction
+                normalizePostExtraction(perFileResults[perFileResults.length - 1])
 
                 send('file_complete', {
                   fileId,
                   fileName,
                   groupId: group.groupId,
                   success: true,
-                  data: normalizedData,
+                  data: perFileResults[perFileResults.length - 1].data,
                   imageDataUrl,
                 })
 
@@ -525,6 +444,10 @@ export async function POST(request: NextRequest) {
                   const apiErr = err as OpenAIError
                   if (apiErr.status) {
                     lastError = `API ${apiErr.status}: ${err.message}`
+                    // Extra wait on rate limit before next retry
+                    if (apiErr.status === 429) {
+                      await new Promise((resolve) => setTimeout(resolve, 5000))
+                    }
                   } else if (err.name === 'AbortError' || err.name === 'TimeoutError') {
                     lastError = `请求超时 (${Math.round(perCallTimeout / 1000)}s)`
                   } else {
@@ -555,69 +478,21 @@ export async function POST(request: NextRequest) {
             }
           })
 
-          // ── Phase 1.5: Post-extraction normalization ──────────────────────
-          normalizeAllResults(perFileResults)
-
-          // ── Phase 2: Schema alignment + flattening (before merge) ──────────
-          send('phase', { phase: 'aligning' })
-          const fieldPaths = collectFieldPaths(perFileResults)
-          let schema
-          try {
-            schema = await alignSchemaWithAI(openai, apiSettings.model, fieldPaths, abortController.signal, schemaAlignPrompt)
-          } catch {
-            schema = alignSchema(fieldPaths)
-          }
-
-          // Apply flattened schema to each PerFileResult
-          const alignedResults = applyFlattenedSchemaToResults(perFileResults, schema)
-
-          send('schema_ready', {
-            headers: schema.field_order,
-            totalRows: alignedResults.filter((r) => r.success).length,
-          })
-
-          // ── Phase 3: Group merge (fields now aligned and flat) ────────────
-          send('phase', { phase: 'merging' })
-          const mergedRecords: MergedRecord[] = []
-
-          for (const group of fileGroups) {
-            const groupAligned = alignedResults.filter((r) => r.groupId === group.groupId)
-
-            send('merge_start', {
-              groupId: group.groupId,
-              label: group.groupKey,
-              fileCount: groupAligned.length,
-              successCount: groupAligned.filter((r) => r.success).length,
-            })
-
-            const merged = await mergeGroupWithFallback(openai, apiSettings.model, group, groupAligned, abortController.signal, mergePrompt)
-            mergedRecords.push(merged)
-
-            send('group_merged', {
-              groupId: merged.groupId,
-              groupKey: merged.groupKey,
-              sourceFileNames: merged.sourceFileNames,
-              mergedCount: merged.mergedCount,
-              mergeMethod: merged.mergeMethod,
-              conflicts: merged.conflicts,
-            })
-          }
-
-          // ── Final: build UnifiedSchema and send all_done ──────────────────
-          const unifiedSchema = buildUnifiedSchemaFromMerged(mergedRecords, schema.field_order)
-
-          send('all_done', {
-            totalFiles: files.length,
-            totalGroups: fileGroups.length,
-            mergedGroups: mergedRecords.length,
-            rows: unifiedSchema.rows.map((row) => ({
-              id: row.id,
-              label: row.label,
-              data: row.data,
-              sourceFiles: row.sourceFiles,
-              isMerged: row.isMerged,
-              fieldConsistency: row.fieldConsistency,
-              mergeMethod: row.mergeMethod,
+          // ── Send extraction_done with results and groups ──────────────────
+          // Strip imageDataUrl to reduce payload (already sent via file_complete)
+          send('extraction_done', {
+            results: perFileResults.map((r) => ({
+              fileId: r.fileId,
+              fileName: r.fileName,
+              groupId: r.groupId,
+              success: r.success,
+              data: r.data,
+              error: r.error,
+            })),
+            groups: fileGroups.map((g) => ({
+              groupId: g.groupId,
+              groupKey: g.groupKey,
+              fileCount: g.files.length,
             })),
           })
 

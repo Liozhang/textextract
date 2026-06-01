@@ -41,7 +41,6 @@ function normalizePathPrefix(path: string): string {
 
 /** Map of known field-name variants to canonical form */
 const KEY_ALIASES: Record<string, string> = {
-  '籍贯': '医保类型',
   '费别': '医保类型',
   '医保': '医保类型',
   '病人姓名': '姓名',
@@ -76,10 +75,10 @@ const KEY_ALIASES: Record<string, string> = {
   '申请医生': '主治医师',
   '送检科室': '科室',
   '诊断': '诊断',
-  '入院诊断': '诊断',
-  '出院诊断': '诊断',
-  '临床诊断': '诊断',
-  '病理诊断': '诊断',
+  '入院诊断': '入院诊断',
+  '出院诊断': '出院诊断',
+  '临床诊断': '临床诊断',
+  '病理诊断': '病理诊断',
   '本单号': '标本条码号',
   '标本条码号': '标本条码号',
   '标本号': '标本条码号',
@@ -174,7 +173,7 @@ function normalizeAge(key: string, value: unknown): unknown {
 
 function normalizeDateTime(key: string, value: unknown): unknown {
   if (typeof key !== 'string') return value;
-  if (!key.includes('时间') && !key.includes('日期') && !key.includes('日期')) return value;
+  if (!key.includes('时间') && !key.includes('日期')) return value;
   const s = String(value ?? '').trim();
   if (!s) return value;
 
@@ -195,6 +194,12 @@ function normalizeDateTime(key: string, value: unknown): unknown {
     return sepMatch[4] ? `${base} ${sepMatch[4]}` : base;
   }
 
+  // DD/MM/YYYY or DD-MM-YYYY (reverse order)
+  const reverseMatch = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (reverseMatch) {
+    return `${reverseMatch[3]}-${reverseMatch[2].padStart(2, '0')}-${reverseMatch[1].padStart(2, '0')}`;
+  }
+
   return value;
 }
 
@@ -210,7 +215,7 @@ function normalizeDateTime(key: string, value: unknown): unknown {
  */
 function protectStructuredArray(key: string, value: unknown[]): unknown[] | undefined {
   // Known structured array keys
-  if (key.includes('病理') || key.includes('手术') || key.includes('诊断') && Array.isArray(value)) {
+  if ((key.includes('病理') || key.includes('手术') || key.includes('诊断')) && Array.isArray(value)) {
     if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null && !Array.isArray(value[0])) {
       const keys = Object.keys(value[0] as Record<string, unknown>);
       // If objects have 3+ keys, they are structured records

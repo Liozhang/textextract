@@ -67,34 +67,28 @@ export function parseJsonResponse(text: string): unknown {
     }
   }
 
-  // Layer 4: Split by commas/semicolons and try to parse segments
-  const segments = trimmed
-    .split(/[;,]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  for (const seg of segments) {
-    for (const wrapper of ['{', '[']) {
-      const closing = wrapper === '{' ? '}' : ']';
-      try {
-        return JSON.parse(wrapper + seg + closing);
-      } catch {
-        // continue
-      }
-    }
-    try {
-      const parsed = JSON.parse(seg);
-      if (typeof parsed === 'object' && parsed !== null) return parsed;
-    } catch {
-      // continue
+  // Layer 4: Regex to find key:value pairs and construct JSON
+  // Avoids splitting by semicolons which would truncate multi-value fields (e.g. "诊断: A;B")
+  const kvRegex4 = /["']?([^"',:：\n]+?)["']?\s*[:：]\s*["']?([^"'\n]*?)["']?(?:\s*[,，]\s*|$)/g;
+  const kvPairs4: Record<string, string> = {};
+  let kvMatch4;
+  while ((kvMatch4 = kvRegex4.exec(trimmed)) !== null) {
+    const k = kvMatch4[1].trim();
+    const v = kvMatch4[2].trim();
+    if (k && v) {
+      kvPairs4[k] = v;
     }
   }
+  if (Object.keys(kvPairs4).length >= 2) {
+    return kvPairs4;
+  }
 
-  // Layer 5: Regex to find key-value patterns and construct JSON
-  const kvRegex = /["']?(\w+)["']?\s*[:：]\s*["']?([^"'}\],]+)["']?/g;
+  // Layer 5: Regex to find key-value patterns (broader Chinese key support)
+  const kvRegex5 = /["']?([\w\u4e00-\u9fff\u3000-\u303f\uff00-\uffef\-()（）]+)["']?\s*[:：]\s*["']?([^"'}\],]+)["']?/g;
   const kvResult: Record<string, string> = {};
-  let kvMatch;
-  while ((kvMatch = kvRegex.exec(trimmed)) !== null) {
-    kvResult[kvMatch[1].trim()] = kvMatch[2].trim();
+  let kvMatch5;
+  while ((kvMatch5 = kvRegex5.exec(trimmed)) !== null) {
+    kvResult[kvMatch5[1].trim()] = kvMatch5[2].trim();
   }
   if (Object.keys(kvResult).length > 0) {
     return kvResult;

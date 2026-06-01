@@ -22,6 +22,7 @@ const en = {
     resetConfirmTitle: 'Reset All Data?',
     resetConfirmDesc: 'This will clear all uploaded files, results, and export data. This action cannot be undone.',
     resetConfirmAction: 'Reset',
+    reset: 'Reset',
   },
   app: {
     title: 'OCR Extract',
@@ -31,6 +32,22 @@ const en = {
     upload: 'Upload',
     review: 'Extract',
     export: 'Export',
+  },
+  template: {
+    title: 'Output Template',
+    description: 'Describe the columns you want to extract, or generate with AI',
+    embeddedDescription: 'Based on extracted fields, configure output columns to align results',
+    promptPlaceholder: 'e.g. "Discharge summary: patient info, diagnoses, lab results"',
+    generate: 'Generate Template',
+    generating: 'Generating...',
+    skip: 'Skip (auto-detect columns)',
+    confirmUse: 'Use Template',
+    key: 'Column Name',
+    type: 'Type',
+    desc: 'Description',
+    example: 'Example',
+    addColumn: 'Add Column',
+    removeColumn: 'Remove',
   },
   upload: {
     title: 'File Upload',
@@ -60,6 +77,7 @@ const en = {
     phaseMerging: 'Merging',
     phaseAligning: 'Align & Flatten',
     mergeProgress: '{{current}}/{{total}}',
+    schemaAlignFallback: 'AI alignment failed, used rule-based fallback',
   },
   merge: {
     aiMerged: 'AI merged {{count}} records',
@@ -99,7 +117,14 @@ const en = {
     showDetails: 'Show Details',
     fileDetails: 'File Extraction Details',
     mergedRecords: 'Merged',
+    mergeMethodAi: 'AI Merged',
+    mergeMethodFallback: 'Strategy Fallback',
+    mergeMethodSingle: 'Single File',
     completeSummary: 'Complete: {{groups}} groups, {{rows}} rows, {{fields}} fields',
+    extractionSummary: '{{total}} files processed, {{succeeded}} succeeded, {{failed}} failed',
+    extractedFields: 'Extracted fields ({{count}})',
+    configureTemplate: 'Configure output template or skip to auto-detect',
+    retryFailed: 'Retry Failed ({{count}})',
   },
   export: {
     title: 'Export Results',
@@ -139,6 +164,7 @@ const zh: {
   app: Record<string, string>;
   steps: Record<string, string>;
   upload: Record<string, string>;
+  template: Record<string, string>;
   pipeline: Record<string, string>;
   merge: Record<string, string>;
   review: Record<string, string>;
@@ -156,6 +182,7 @@ const zh: {
     resetConfirmTitle: '\u91CD\u7F6E\u6240\u6709\u6570\u636E\uFF1F',
     resetConfirmDesc: '\u8FD9\u5C06\u6E05\u9664\u6240\u6709\u4E0A\u4F20\u6587\u4EF6\u3001\u63D0\u53D6\u7ED3\u679C\u548C\u5BFC\u51FA\u6570\u636E\u3002\u6B64\u64CD\u4F5C\u65E0\u6CD5\u64A4\u9500\u3002',
     resetConfirmAction: '\u91CD\u7F6E',
+    reset: '\u91CD\u7F6E',
   },
   app: {
     title: 'OCR Extract',
@@ -165,6 +192,22 @@ const zh: {
     upload: '\u4E0A\u4F20\u6587\u4EF6',
     review: '\u5BA1\u6838\u63D0\u53D6',
     export: '\u5BFC\u51FA\u7ED3\u679C',
+  },
+  template: {
+    title: '\u8F93\u51FA\u6A21\u677F',
+    description: '\u63CF\u8FF0\u4F60\u5E0C\u671B\u63D0\u53D6\u7684\u5217\uFF0C\u6216\u7528 AI \u751F\u6210',
+    embeddedDescription: '\u57FA\u4E8E\u5DF2\u63D0\u53D6\u7684\u5B57\u6BB5\uFF0C\u914D\u7F6E\u8F93\u51FA\u5217\u4EE5\u89C4\u8303\u7ED3\u679C',
+    promptPlaceholder: '\u4F8B\u5982\uFF1A\u201C\u51FA\u9662\u5C0F\u7ED3\uFF0C\u63D0\u53D6\u60A3\u8005\u57FA\u672C\u4FE1\u606F\u3001\u8BCA\u65AD\u3001\u68C0\u9A8C\u6307\u6807\u201D',
+    generate: '\u751F\u6210\u6A21\u677F',
+    generating: '\u751F\u6210\u4E2D...',
+    skip: '\u8DF3\u8FC7\uFF08\u81EA\u52A8\u68C0\u6D4B\u5217\uFF09',
+    confirmUse: '\u4F7F\u7528\u6A21\u677F',
+    key: '\u5B57\u6BB5\u540D',
+    type: '\u7C7B\u578B',
+    desc: '\u63CF\u8FF0',
+    example: '\u793A\u4F8B\u503C',
+    addColumn: '\u6DFB\u52A0\u5217',
+    removeColumn: '\u5220\u9664',
   },
   upload: {
     title: '\u6587\u4EF6\u4E0A\u4F20',
@@ -194,6 +237,7 @@ const zh: {
     phaseMerging: '\u5408\u5E76',
     phaseAligning: '\u5BF9\u9F50\u5C55\u5E73',
     mergeProgress: '{{current}}/{{total}}',
+    schemaAlignFallback: 'AI \u5BF9\u9F50\u5931\u8D25\uFF0C\u5DF2\u4F7F\u7528\u89C4\u5219\u56DE\u9000',
   },
   merge: {
     aiMerged: 'AI \u5408\u5E76 {{count}} \u6761\u8BB0\u5F55',
@@ -233,7 +277,14 @@ const zh: {
     showDetails: '\u663E\u793A\u660E\u7EC6',
     fileDetails: '\u5404\u6587\u4EF6\u63D0\u53D6\u660E\u7EC6',
     mergedRecords: '\u5DF2\u5408\u5E76',
+    mergeMethodAi: 'AI \u5408\u5E76',
+    mergeMethodFallback: '\u7B56\u7565\u56DE\u9000',
+    mergeMethodSingle: '\u5355\u6587\u4EF6',
     completeSummary: '\u5B8C\u6210: {{groups}} \u7EC4\uFF0C{{rows}} \u884C\uFF0C{{fields}} \u4E2A\u5B57\u6BB5',
+    extractionSummary: '\u5171 {{total}} \u4E2A\u6587\u4EF6\uFF0C{{succeeded}} \u6210\u529F\uFF0C{{failed}} \u5931\u8D25',
+    extractedFields: '\u5DF2\u63D0\u53D6\u5B57\u6BB5\uFF08{{count}}\uFF09',
+    configureTemplate: '\u914D\u7F6E\u8F93\u51FA\u6A21\u677F\u6216\u8DF3\u8FC7\u81EA\u52A8\u68C0\u6D4B',
+    retryFailed: '\u91CD\u8BD5\u5931\u8D25\u9879 ({{count}})',
   },
   export: {
     title: '\u5BFC\u51FA\u7ED3\u679C',
@@ -287,6 +338,7 @@ type TranslationMap = {
   app: Record<string, string>;
   steps: Record<string, string>;
   upload: Record<string, string>;
+  template: Record<string, string>;
   pipeline: Record<string, string>;
   merge: Record<string, string>;
   review: Record<string, string>;
