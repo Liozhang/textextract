@@ -72,9 +72,11 @@ export default function Home() {
     }
   };
 
+  const isPipelineActive = progress.status === 'extracting' || progress.status === 'aligning_merging';
+
   const goPrev = () => {
     const idx = STEPS.findIndex((s) => s.key === step);
-    if (idx > 0) {
+    if (idx > 0 && !isPipelineActive) {
       setStep(STEPS[idx - 1].key as typeof step);
     }
   };
@@ -170,7 +172,7 @@ export default function Home() {
         <Button
           variant="outline"
           onClick={goPrev}
-          disabled={currentStepIndex === 0}
+          disabled={currentStepIndex === 0 || isPipelineActive}
         >
           {t('common.prev')}
         </Button>

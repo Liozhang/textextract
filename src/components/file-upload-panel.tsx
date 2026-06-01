@@ -110,6 +110,9 @@ export default function FileUploadPanel() {
   const removeFile = useStore((s) => s.removeFile);
   const updateFile = useStore((s) => s.updateFile);
   const clearFiles = useStore((s) => s.clearFiles);
+  const progress = useStore((s) => s.progress);
+
+  const isPipelineActive = progress.status === 'extracting' || progress.status === 'aligning_merging';
 
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -145,6 +148,7 @@ export default function FileUploadPanel() {
   const handleFileList = useCallback(
     (fileList: FileList | null) => {
       if (!fileList || fileList.length === 0) return;
+      if (isPipelineActive) return;
 
       // Enforce max file count
       const remaining = MAX_FILE_COUNT - files.length;
@@ -191,15 +195,15 @@ export default function FileUploadPanel() {
         addFiles(newAppFiles);
       }
     },
-    [addFiles, processFile, t],
+    [addFiles, processFile, t, isPipelineActive],
   );
 
   // Drag events
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setDragOver(true);
-  }, []);
+    if (!isPipelineActive) setDragOver(true);
+  }, [isPipelineActive]);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -212,15 +216,15 @@ export default function FileUploadPanel() {
       e.preventDefault();
       e.stopPropagation();
       setDragOver(false);
-      handleFileList(e.dataTransfer.files);
+      if (!isPipelineActive) handleFileList(e.dataTransfer.files);
     },
-    [handleFileList],
+    [handleFileList, isPipelineActive],
   );
 
   // Click to open file picker
   const handleZoneClick = useCallback(() => {
-    inputRef.current?.click();
-  }, []);
+    if (!isPipelineActive) inputRef.current?.click();
+  }, [isPipelineActive]);
 
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -256,11 +260,13 @@ export default function FileUploadPanel() {
           onDrop={handleDrop}
           className={`
             flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed
-            p-10 transition-colors cursor-pointer select-none
+            p-10 transition-colors select-none
             ${
-              dragOver
-                ? 'border-primary bg-primary/5'
-                : 'border-muted-foreground/25 hover:border-primary/50 hover:bg-muted/50'
+              isPipelineActive
+                ? 'border-muted-foreground/10 cursor-not-allowed opacity-50'
+                : dragOver
+                  ? 'border-primary bg-primary/5 cursor-pointer'
+                  : 'border-muted-foreground/25 hover:border-primary/50 hover:bg-muted/50 cursor-pointer'
             }
           `}
         >
@@ -290,7 +296,7 @@ export default function FileUploadPanel() {
               <span>
                 {t('upload.stats', { count: totalCount, size: formatFileSize(totalSize) })}
               </span>
-              <Button variant="ghost" size="sm" onClick={clearFiles} className="gap-1.5 text-destructive hover:text-destructive">
+              <Button variant="ghost" size="sm" onClick={clearFiles} disabled={isPipelineActive} className="gap-1.5 text-destructive hover:text-destructive">
                 <Trash2 className="size-4" />
                 {t('upload.clearAll')}
               </Button>
@@ -312,7 +318,12 @@ export default function FileUploadPanel() {
                     {getStatusBadge(t, file.status)}
                     <button
                       onClick={() => removeFile(file.id)}
-                      className="rounded-sm p-1 text-muted-foreground hover:text-destructive transition-colors"
+                      disabled={isPipelineActive}
+                      className={`rounded-sm p-1 transition-colors ${
+                        isPipelineActive
+                          ? 'text-muted-foreground/30 cursor-not-allowed'
+                          : 'text-muted-foreground hover:text-destructive'
+                      }`}
                       aria-label={t('upload.remove', { name: file.name })}
                     >
                       <X className="size-4" />
