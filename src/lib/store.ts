@@ -50,6 +50,12 @@ export interface ExportSettings {
   format: ExportFormat;
 }
 
+export interface PromptSettings {
+  extraction: string;
+  schemaAlign: string;
+  merge: string;
+}
+
 // ---------------------------------------------------------------------------
 // State shape
 // ---------------------------------------------------------------------------
@@ -93,6 +99,11 @@ export interface AppState {
   exportSettings: ExportSettings;
   setExportSettings: (settings: Partial<ExportSettings>) => void;
 
+  // Prompt settings (empty string = use default)
+  promptSettings: PromptSettings;
+  setPromptSettings: (phase: keyof PromptSettings, value: string) => void;
+  resetPromptSettings: () => void;
+
   // Merged export data (synced from review panel after backend pipeline)
   mergedExportData: MergedExportRow[];
   setMergedExportData: (rows: MergedExportRow[]) => void;
@@ -114,6 +125,12 @@ const DEFAULT_PROGRESS: ExtractionProgress = {
 
 const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   format: 'xlsx',
+};
+
+const DEFAULT_PROMPT_SETTINGS: PromptSettings = {
+  extraction: '',
+  schemaAlign: '',
+  merge: '',
 };
 
 // ---------------------------------------------------------------------------
@@ -176,6 +193,15 @@ export const useStore = create<AppState>()(
           exportSettings: { ...state.exportSettings, ...partial },
         })),
 
+      // --- Prompt Settings ---
+      promptSettings: { ...DEFAULT_PROMPT_SETTINGS },
+      setPromptSettings: (phase, value) =>
+        set((state) => ({
+          promptSettings: { ...state.promptSettings, [phase]: value },
+        })),
+      resetPromptSettings: () =>
+        set({ promptSettings: { ...DEFAULT_PROMPT_SETTINGS } }),
+
       // --- Merged export data ---
       mergedExportData: [],
       setMergedExportData: (rows) => set({ mergedExportData: rows }),
@@ -194,6 +220,7 @@ export const useStore = create<AppState>()(
           results: [],
           progress: { ...DEFAULT_PROGRESS },
           exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
+          promptSettings: { ...DEFAULT_PROMPT_SETTINGS },
           selectedField: null,
           selectedFileId: null,
           mergedExportData: [],
@@ -217,6 +244,7 @@ export const useStore = create<AppState>()(
       partialize: (state) => ({
         exportSettings: state.exportSettings,
         locale: state.locale,
+        promptSettings: state.promptSettings,
       }),
       // Skip hydration on server; the `mounted` flag is used client-side
       skipHydration: true,

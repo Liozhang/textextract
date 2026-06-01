@@ -40,6 +40,7 @@ export async function mergeGroupWithAI(
   groupId: string,
   successfulResults: AlignedPerFileResult[],
   abortSignal: AbortSignal,
+  customSystemPrompt?: string,
 ): Promise<MergedRecord> {
   // Prepare source data (data is Record<string, string> but buildMergeUserMessage accepts Record<string, unknown>)
   const sourceData = successfulResults.map((r) => ({
@@ -52,7 +53,7 @@ export async function mergeGroupWithAI(
   const requestOptions: Record<string, unknown> = {
     model,
     messages: [
-      { role: 'system', content: MERGE_SYSTEM_MESSAGE },
+      { role: 'system', content: customSystemPrompt || MERGE_SYSTEM_MESSAGE },
       { role: 'user', content: userMessage },
     ],
     temperature: 0.1,

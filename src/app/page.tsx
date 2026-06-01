@@ -8,6 +8,7 @@ import FileUploadPanel from '@/components/file-upload-panel';
 import ReviewPanel from '@/components/review-panel';
 import ExportPanel from '@/components/export-panel';
 import LanguageSwitcher from '@/components/language-switcher';
+import PromptSettings from '@/components/prompt-settings';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
@@ -106,6 +107,7 @@ export default function Home() {
           >
             <RotateCcw className="size-4" />
           </Button>
+          <PromptSettings />
           <LanguageSwitcher />
         </div>
       </div>

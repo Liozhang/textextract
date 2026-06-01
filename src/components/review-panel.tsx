@@ -165,6 +165,7 @@ export default function ReviewPanel() {
   const addResult = useStore((s) => s.addResult);
   const setProgress = useStore((s) => s.setProgress);
   const setMergedExportData = useStore((s) => s.setMergedExportData);
+  const promptSettings = useStore((s) => s.promptSettings);
 
   const abortRef = useRef<AbortController | null>(null);
   const [hasExtracted, setHasExtracted] = useState(false);
@@ -236,6 +237,11 @@ export default function ReviewPanel() {
         content: f.content,
         dataUrl: f.dataUrl,
       })),
+      prompts: {
+        extraction: promptSettings.extraction || undefined,
+        schemaAlign: promptSettings.schemaAlign || undefined,
+        merge: promptSettings.merge || undefined,
+      },
     };
 
     const controller = new AbortController();

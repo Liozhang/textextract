@@ -10,9 +10,12 @@ import { alignSchemaWithAI, alignSchema } from '@/lib/pipeline/schema-aligner'
 import { collectFieldPaths, applyFlattenedSchemaToResults, buildUnifiedSchemaFromMerged } from '@/lib/pipeline/schema-flattener'
 import {
   EXTRACTION_SYSTEM_MESSAGE,
+  SCHEMA_ALIGN_SYSTEM_MESSAGE,
+  MERGE_SYSTEM_MESSAGE,
   TEXT_EXTRACTION_PREFIX,
 } from '@/lib/pipeline/prompts'
 import { strategyMerge, isReasoningModel } from '@/lib/merge-utils'
+import { normalizeAllResults } from '@/lib/pipeline/post-normalizer'
 import type { PerFileResult, AlignedPerFileResult, MergedRecord } from '@/lib/pipeline/types'
 
 // ─── Security: URL validation ────────────────────────────────────────────
@@ -61,6 +64,11 @@ interface ApiSettings {
 interface ExtractRequestBody {
   files: FileInput[]
   imageCompressThreshold?: number
+  prompts?: {
+    extraction?: string
+    schemaAlign?: string
+    merge?: string
+  }
 }
 
 // ─── Helper: send SSE event ─────────────────────────────────────────────────
@@ -223,6 +231,7 @@ async function mergeGroupWithFallback(
   group: { groupId: string; groupKey: string },
   groupResults: AlignedPerFileResult[],
   abortSignal: AbortSignal,
+  mergePrompt?: string,
 ): Promise<MergedRecord> {
   const successful = groupResults.filter((r) => r.success && r.data)
 
@@ -242,7 +251,7 @@ async function mergeGroupWithFallback(
   }
 
   try {
-    return await mergeGroupWithAI(openai, model, group.groupKey, group.groupId, successful, abortSignal)
+    return await mergeGroupWithAI(openai, model, group.groupKey, group.groupId, successful, abortSignal, mergePrompt)
   } catch {
     // Fallback to strategy merge
     const { data } = strategyMerge(successful.map(r => ({ data: r.data! as Record<string, unknown> })), 'first_wins')
@@ -300,7 +309,13 @@ export async function POST(request: NextRequest) {
     const {
       files,
       imageCompressThreshold = Number(process.env.IMAGE_COMPRESS_THRESHOLD) || 20,
+      prompts: customPrompts,
     } = body
+
+    // Resolve prompts: custom overrides or defaults
+    const extractionPrompt = customPrompts?.extraction || EXTRACTION_SYSTEM_MESSAGE
+    const schemaAlignPrompt = customPrompts?.schemaAlign || SCHEMA_ALIGN_SYSTEM_MESSAGE
+    const mergePrompt = customPrompts?.merge || MERGE_SYSTEM_MESSAGE
 
     // All model settings from .env (trim to avoid whitespace issues)
     const apiSettings: ApiSettings = {
@@ -394,7 +409,7 @@ export async function POST(request: NextRequest) {
             }
 
             const baseMessages: OpenAI.ChatCompletionMessageParam[] = [
-              { role: 'system', content: EXTRACTION_SYSTEM_MESSAGE },
+              { role: 'system', content: extractionPrompt },
               { role: 'user', content: contentParts.length === 1 && contentParts[0].type === 'text'
                 ? contentParts[0].text
                 : contentParts as OpenAI.ChatCompletionContentPart[],
@@ -495,12 +510,15 @@ export async function POST(request: NextRequest) {
             }
           })
 
+          // ── Phase 1.5: Post-extraction normalization ──────────────────────
+          normalizeAllResults(perFileResults)
+
           // ── Phase 2: Schema alignment + flattening (before merge) ──────────
           send('phase', { phase: 'aligning' })
           const fieldPaths = collectFieldPaths(perFileResults)
           let schema
           try {
-            schema = await alignSchemaWithAI(openai, apiSettings.model, fieldPaths, abortController.signal)
+            schema = await alignSchemaWithAI(openai, apiSettings.model, fieldPaths, abortController.signal, schemaAlignPrompt)
           } catch {
             schema = alignSchema(fieldPaths)
           }
@@ -527,7 +545,7 @@ export async function POST(request: NextRequest) {
               successCount: groupAligned.filter((r) => r.success).length,
             })
 
-            const merged = await mergeGroupWithFallback(openai, apiSettings.model, group, groupAligned, abortController.signal)
+            const merged = await mergeGroupWithFallback(openai, apiSettings.model, group, groupAligned, abortController.signal, mergePrompt)
             mergedRecords.push(merged)
 
             send('group_merged', {

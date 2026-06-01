@@ -17,6 +17,7 @@ const en = {
     next: 'Next',
     step: 'Step {{current}} / {{total}}',
     cancel: 'Cancel',
+    confirm: 'OK',
     resetAll: 'Reset All',
     resetConfirmTitle: 'Reset All Data?',
     resetConfirmDesc: 'This will clear all uploaded files, results, and export data. This action cannot be undone.',
@@ -122,6 +123,15 @@ const en = {
     jsonDesc: 'JSON format, ideal for developers and programmatic processing',
     exportFailedDetail: 'Export failed ({{code}})',
   },
+  settings: {
+    title: 'Prompt Settings',
+    extraction: 'Extraction Prompt',
+    schemaAlign: 'Schema Alignment Prompt',
+    merge: 'Merge Prompt',
+    restoreDefaults: 'Restore Defaults',
+    restoreConfirmTitle: 'Restore Defaults?',
+    restoreConfirmDesc: 'All custom prompts will be replaced with defaults. This cannot be undone.',
+  },
 } satisfies TranslationMap;
 
 const zh: {
@@ -133,6 +143,7 @@ const zh: {
   merge: Record<string, string>;
   review: Record<string, string>;
   export: Record<string, string>;
+  settings: Record<string, string>;
 } = {
   common: {
     loading: '\u52A0\u8F7D\u4E2D...',
@@ -140,6 +151,7 @@ const zh: {
     next: '\u4E0B\u4E00\u6B65',
     step: '\u6B65\u9AA4 {{current}} / {{total}}',
     cancel: '\u53D6\u6D88',
+    confirm: '\u786E\u8BA4',
     resetAll: '\u91CD\u7F6E\u5168\u90E8',
     resetConfirmTitle: '\u91CD\u7F6E\u6240\u6709\u6570\u636E\uFF1F',
     resetConfirmDesc: '\u8FD9\u5C06\u6E05\u9664\u6240\u6709\u4E0A\u4F20\u6587\u4EF6\u3001\u63D0\u53D6\u7ED3\u679C\u548C\u5BFC\u51FA\u6570\u636E\u3002\u6B64\u64CD\u4F5C\u65E0\u6CD5\u64A4\u9500\u3002',
@@ -245,6 +257,15 @@ const zh: {
     jsonDesc: 'JSON \u683C\u5F0F\uFF0C\u9002\u5408\u5F00\u53D1\u8005\u548C\u7A0B\u5E8F\u5904\u7406',
     exportFailedDetail: '\u5BFC\u51FA\u5931\u8D25 ({{code}})',
   },
+  settings: {
+    title: 'Prompt \u8BBE\u7F6E',
+    extraction: '\u63D0\u53D6 Prompt',
+    schemaAlign: 'Schema \u5BF9\u9F50 Prompt',
+    merge: '\u5408\u5E76 Prompt',
+    restoreDefaults: '\u6062\u590D\u9ED8\u8BA4',
+    restoreConfirmTitle: '\u6062\u590D\u9ED8\u8BA4\u8BBE\u7F6E\uFF1F',
+    restoreConfirmDesc: '\u6240\u6709\u81EA\u5B9A\u4E49 Prompt \u5C06\u88AB\u66FF\u6362\u4E3A\u9ED8\u8BA4\u503C\uFF0C\u6B64\u64CD\u4F5C\u65E0\u6CD5\u64A4\u9500\u3002',
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -270,6 +291,7 @@ type TranslationMap = {
   merge: Record<string, string>;
   review: Record<string, string>;
   export: Record<string, string>;
+  settings: Record<string, string>;
 };
 
 const translations: Record<Locale, TranslationMap> = { en, zh };

@@ -106,8 +106,20 @@ function cacheSet(key: string, schema: FlattenedSchema): void {
   schemaCache.set(key, schema);
 }
 
-function buildFieldPathSetKey(paths: FieldPathInfo[]): string {
-  return paths.map((p) => p.path).sort().join('|');
+function simpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return hash.toString(36);
+}
+
+function buildFieldPathSetKey(paths: FieldPathInfo[], systemPrompt?: string): string {
+  const pathPart = paths.map((p) => p.path).sort().join('|');
+  const promptHash = systemPrompt ? simpleHash(systemPrompt) : '';
+  return `${promptHash}:${pathPart}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,11 +136,13 @@ export async function alignSchemaWithAI(
   model: string,
   fieldPaths: FieldPathInfo[],
   abortSignal: AbortSignal,
+  customSystemPrompt?: string,
 ): Promise<FlattenedSchema> {
   if (fieldPaths.length === 0) return emptySchema();
 
-  // Check cache
-  const cacheKey = buildFieldPathSetKey(fieldPaths);
+  // Check cache (key includes effective prompt so custom prompts don't hit stale cache)
+  const effectivePrompt = customSystemPrompt || SCHEMA_ALIGN_SYSTEM_MESSAGE;
+  const cacheKey = buildFieldPathSetKey(fieldPaths, effectivePrompt);
   const cached = schemaCache.get(cacheKey);
   if (cached) return cached;
 
@@ -137,7 +151,7 @@ export async function alignSchemaWithAI(
   const requestOptions: Record<string, unknown> = {
     model,
     messages: [
-      { role: 'system', content: SCHEMA_ALIGN_SYSTEM_MESSAGE },
+      { role: 'system', content: customSystemPrompt || SCHEMA_ALIGN_SYSTEM_MESSAGE },
       { role: 'user', content: userMessage },
     ],
     temperature: 0.1,
