@@ -5,7 +5,6 @@ import { useStore } from '@/lib/store';
 import { useHydrated } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import FileUploadPanel from '@/components/file-upload-panel';
-import TemplatePanel from '@/components/template-panel';
 import ReviewPanel from '@/components/review-panel';
 import ExportPanel from '@/components/export-panel';
 import LanguageSwitcher from '@/components/language-switcher';
@@ -23,8 +22,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import {
   Upload,
-  FileCode2,
-  ClipboardCheck,
+  FileSearch,
   Download,
   Check,
   RotateCcw,
@@ -32,8 +30,7 @@ import {
 
 const STEPS = [
   { key: 'upload', icon: Upload },
-  { key: 'template', icon: FileCode2 },
-  { key: 'review', icon: ClipboardCheck },
+  { key: 'review', icon: FileSearch },
   { key: 'export', icon: Download },
 ] as const;
 
@@ -42,7 +39,6 @@ export default function Home() {
   const setStep = useStore((s) => s.setStep);
   const progress = useStore((s) => s.progress);
   const files = useStore((s) => s.files);
-  const template = useStore((s) => s.template);
   const resetAll = useStore((s) => s.resetAll);
   const hydrated = useHydrated();
   const t = useT();
@@ -63,8 +59,7 @@ export default function Home() {
   const currentStepIndex = STEPS.findIndex((s) => s.key === step);
 
   const canGoNext = () => {
-    if (step === 'upload') return files.some((f) => f.status === 'parsed');
-    if (step === 'template') return template.prompt.trim().length > 0 || template.fields.length > 0;
+    if (step === 'upload') return files.length > 0 && progress.status !== 'extracting';
     if (step === 'review') return progress.status === 'done';
     return false;
   };
@@ -164,7 +159,6 @@ export default function Home() {
       {/* Step Content */}
       <div className="space-y-6">
         {step === 'upload' && <FileUploadPanel />}
-        {step === 'template' && <TemplatePanel />}
         {step === 'review' && <ReviewPanel />}
         {step === 'export' && <ExportPanel />}
       </div>

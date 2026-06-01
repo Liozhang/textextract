@@ -3,6 +3,18 @@ import OpenAI from 'openai'
 import mammoth from 'mammoth'
 import sharp from 'sharp'
 
+import { parseJsonResponse } from '@/lib/pipeline/json-parser'
+import { groupFilesByPrefix, findGroupForFile } from '@/lib/pipeline/file-grouper'
+import { mergeGroupWithAI } from '@/lib/pipeline/merge-agent'
+import { alignSchemaWithAI, alignSchema } from '@/lib/pipeline/schema-aligner'
+import { collectFieldPaths, applyFlattenedSchemaToResults, buildUnifiedSchemaFromMerged } from '@/lib/pipeline/schema-flattener'
+import {
+  EXTRACTION_SYSTEM_MESSAGE,
+  TEXT_EXTRACTION_PREFIX,
+} from '@/lib/pipeline/prompts'
+import { strategyMerge, isReasoningModel } from '@/lib/merge-utils'
+import type { PerFileResult, AlignedPerFileResult, MergedRecord } from '@/lib/pipeline/types'
+
 // ─── Security: URL validation ────────────────────────────────────────────
 
 const PRIVATE_HOSTS = [
@@ -31,21 +43,12 @@ function isPrivateHost(url: string): boolean {
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 interface FileInput {
+  id: string
   name: string
+  size?: number
+  type?: string
   content?: string
   dataUrl?: string
-}
-
-interface TemplateField {
-  name: string
-  type: string
-  required?: boolean
-  description?: string
-}
-
-interface Template {
-  prompt: string
-  fields: TemplateField[]
 }
 
 interface ApiSettings {
@@ -57,7 +60,6 @@ interface ApiSettings {
 
 interface ExtractRequestBody {
   files: FileInput[]
-  template: Template
   imageCompressThreshold?: number
 }
 
@@ -65,14 +67,6 @@ interface ExtractRequestBody {
 
 function sseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
-}
-
-// ─── Helper: detect if model is a reasoning model ────────────────────────────
-
-function isReasoningModel(model: string): boolean {
-  const lower = model.toLowerCase()
-  // StepFun step-* models, OpenAI o-series models, and DeepSeek models
-  return /^(o[13]-|o4-|step-|deepseek-)/.test(lower)
 }
 
 // ─── File parsing ───────────────────────────────────────────────────────────
@@ -129,10 +123,9 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
       let finalDataUrl: string
 
       if (fileSizeBytes > thresholdBytes) {
-        // Use PNG for transparency support, JPEG for photos
         const isPng = ext === 'png' || ext === 'gif' || ext === 'webp'
         const compressedBuffer = isPng
-          ? await sharp(buffer).png({ quality: 80 }).toBuffer()
+          ? await sharp(buffer).png({ compressionLevel: 9 }).toBuffer()
           : await sharp(buffer).jpeg({ quality: 80 }).toBuffer()
         const base64 = compressedBuffer.toString('base64')
         const mimeType = isPng ? 'image/png' : 'image/jpeg'
@@ -157,109 +150,6 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
   }
 }
 
-// ─── 5-layer JSON Parsing ──────────────────────────────────────────────────
-
-function parseJsonResponse(text: string): unknown {
-  if (!text || !text.trim()) {
-    throw new Error('模型返回内容为空')
-  }
-
-  const trimmed = text.trim()
-
-  // Layer 1: Direct JSON.parse
-  try {
-    return JSON.parse(trimmed)
-  } catch {
-    // continue to next layer
-  }
-
-  // Layer 2: Extract JSON from markdown code blocks
-  const codeBlockRegex = /```(?:json)?\s*\n?([\s\S]*?)\n?```/
-  const codeBlockMatch = trimmed.match(codeBlockRegex)
-  if (codeBlockMatch) {
-    try {
-      return JSON.parse(codeBlockMatch[1].trim())
-    } catch {
-      // continue
-    }
-  }
-
-  // Layer 3: Find JSON object/array using regex
-  const objectMatch = trimmed.match(/\{[\s\S]*\}/)
-  if (objectMatch) {
-    try {
-      return JSON.parse(objectMatch[0])
-    } catch {
-      // try the longest match
-      let bestMatch = ''
-      let depth = 0
-      let start = -1
-      for (let i = 0; i < trimmed.length; i++) {
-        if (trimmed[i] === '{') {
-          if (depth === 0) start = i
-          depth++
-        } else if (trimmed[i] === '}') {
-          depth--
-          if (depth === 0 && start >= 0) {
-            const candidate = trimmed.substring(start, i + 1)
-            if (candidate.length > bestMatch.length) bestMatch = candidate
-          }
-        }
-      }
-      if (bestMatch) {
-        try {
-          return JSON.parse(bestMatch)
-        } catch {
-          // continue
-        }
-      }
-    }
-  }
-
-  const arrayMatch = trimmed.match(/\[[\s\S]*\]/)
-  if (arrayMatch) {
-    try {
-      return JSON.parse(arrayMatch[0])
-    } catch {
-      // continue
-    }
-  }
-
-  // Layer 4: Split by commas/semicolons and try to parse segments
-  const segments = trimmed.split(/[;,]/).map(s => s.trim()).filter(Boolean)
-  for (const seg of segments) {
-    // Try wrapping in braces/brackets
-    for (const wrapper of ['{', '[']) {
-      const closing = wrapper === '{' ? '}' : ']'
-      try {
-        return JSON.parse(wrapper + seg + closing)
-      } catch {
-        // continue
-      }
-    }
-    // Try parsing as-is
-    try {
-      const parsed = JSON.parse(seg)
-      if (typeof parsed === 'object' && parsed !== null) return parsed
-    } catch {
-      // continue
-    }
-  }
-
-  // Layer 5: Regex to find key-value patterns and construct JSON
-  const kvRegex = /["']?(\w+)["']?\s*[:：]\s*["']?([^"'}\],]+)["']?/g
-  const kvResult: Record<string, string> = {}
-  let kvMatch
-  while ((kvMatch = kvRegex.exec(trimmed)) !== null) {
-    kvResult[kvMatch[1].trim()] = kvMatch[2].trim()
-  }
-  if (Object.keys(kvResult).length > 0) {
-    return kvResult
-  }
-
-  throw new Error('无法解析模型返回的JSON内容: ' + trimmed.substring(0, 200))
-}
-
 // ─── Worker pool for concurrent processing ───────────────────────────────────
 
 async function workerPool<T>(
@@ -280,86 +170,26 @@ async function workerPool<T>(
   await Promise.all(workers)
 }
 
-// ─── Separate regions from values ─────────────────────────────────────────────
+// ─── Date/measurement normalization ──────────────────────────────────────────
 
-interface FieldRegion {
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-/** Top-level keys that are coordinate/metadata, not actual data fields */
-const COORD_META_KEYS = new Set(['x', 'y', 'width', 'height', 'value', 'label', 'confidence', 'source', 'polygon', 'attributes'])
-
-function separateRegionsAndValues(
-  extracted: unknown
-): { data: Record<string, unknown>; regions: Record<string, FieldRegion> } {
-  const data: Record<string, unknown> = {}
-  const regions: Record<string, FieldRegion> = {}
-
-  if (extracted && typeof extracted === 'object' && !Array.isArray(extracted)) {
-    for (const [key, val] of Object.entries(extracted as Record<string, unknown>)) {
-      // Skip standalone coordinate/metadata keys leaked by AI
-      if (COORD_META_KEYS.has(key)) continue
-
-      if (val && typeof val === 'object' && !Array.isArray(val) && 'value' in val) {
-        // Coordinate-aware format: { value, x, y, width, height }
-        const obj = val as Record<string, unknown>
-        data[key] = obj.value
-        if (
-          typeof obj.x === 'number' &&
-          typeof obj.y === 'number' &&
-          typeof obj.width === 'number' &&
-          typeof obj.height === 'number'
-        ) {
-          regions[key] = { x: obj.x, y: obj.y, width: obj.width, height: obj.height }
-        }
-      } else {
-        // Plain format: just the value, no coordinates
-        data[key] = val
-      }
-    }
-  } else {
-    // Non-object result — use as-is, no regions
-    return { data: { result: extracted }, regions: {} }
-  }
-
-  return { data, regions }
-}
-
-// ─── Post-extraction validation ────────────────────────────────────────────
-
-/** Normalize Chinese date formats to YYYY-MM-DD */
 function normalizeDate(value: unknown): string {
   const s = String(value ?? '').trim()
   if (!s) return s
-
-  // Already YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-
-  // Chinese date: 2024年1月15日, 2024年01月15日
   const cn = s.match(/(\d{4})年(\d{1,2})月(\d{1,2})日?/)
   if (cn) return `${cn[1]}-${cn[2].padStart(2, '0')}-${cn[3].padStart(2, '0')}`
-
-  // Slash format: 2024/01/15 or 15/01/2024
   const parts = s.split(/[\/\-\.]/).map(Number)
   if (parts.length === 3 && parts.every((p) => !isNaN(p))) {
     if (parts[0] > 1000) return `${parts[0]}-${String(parts[1]).padStart(2, '0')}-${String(parts[2]).padStart(2, '0')}`
     if (parts[2] > 1000) return `${parts[2]}-${String(parts[1]).padStart(2, '0')}-${String(parts[0]).padStart(2, '0')}`
   }
-
   return s
 }
 
-/** Normalize measurement fields: extract {value, unit} or plain string */
 function normalizeMeasurement(value: unknown): unknown {
-  if (value && typeof value === 'object' && 'value' in value && 'unit' in value) {
-    return value // Already structured from AI
-  }
+  if (value && typeof value === 'object' && 'value' in value && 'unit' in value) return value
   const s = String(value ?? '').trim()
   if (!s) return s
-  // Try to extract number + unit: "120 mmHg", "36.5℃", "5mg/kg"
   const match = s.match(/^([\d.]+)\s*(.+)$/)
   if (match) {
     const num = parseFloat(match[1])
@@ -368,20 +198,66 @@ function normalizeMeasurement(value: unknown): unknown {
   return s
 }
 
-/** Apply type-specific normalization to extracted data based on template */
-function applyTypeNormalization(
-  data: Record<string, unknown>,
-  fields: TemplateField[],
-): Record<string, unknown> {
-  const fieldMap = new Map(fields.map((f) => [f.name, f.type]))
+/** Apply generic normalization to extracted data (no template field types needed) */
+function normalizeExtractedData(data: Record<string, unknown>): Record<string, unknown> {
   const normalized: Record<string, unknown> = {}
   for (const [key, val] of Object.entries(data)) {
-    const type = fieldMap.get(key)
-    if (type === 'date') normalized[key] = normalizeDate(val)
-    else if (type === 'measurement') normalized[key] = normalizeMeasurement(val)
-    else normalized[key] = val
+    // Try date normalization for any field that looks like a date
+    const strVal = typeof val === 'string' ? val.trim() : ''
+    if (strVal && (/\d{4}[年/\-]\d{1,2}[月/\-]\d{1,2}/.test(strVal) || /^\d{4}-\d{2}-\d{2}$/.test(strVal))) {
+      normalized[key] = normalizeDate(val)
+    } else if (strVal && /^[\d.]+\s+\w+$/.test(strVal)) {
+      normalized[key] = normalizeMeasurement(val)
+    } else {
+      normalized[key] = val
+    }
   }
   return normalized
+}
+
+// ─── Merge fallback helper ──────────────────────────────────────────────────
+
+async function mergeGroupWithFallback(
+  openai: OpenAI,
+  model: string,
+  group: { groupId: string; groupKey: string },
+  groupResults: AlignedPerFileResult[],
+  abortSignal: AbortSignal,
+): Promise<MergedRecord> {
+  const successful = groupResults.filter((r) => r.success && r.data)
+
+  // Single file or all failed → pass through
+  if (successful.length <= 1) {
+    const r = groupResults.find((r) => r.success) || groupResults[0]
+    return {
+      groupId: group.groupId,
+      groupKey: group.groupKey,
+      data: r?.data || {},
+      imageDataUrl: r?.imageDataUrl,
+      sourceFileNames: successful.length > 0 ? successful.map((r) => r.fileName) : [r?.fileName || ''],
+      mergedCount: successful.length,
+      mergeMethod: 'single',
+      conflicts: [],
+    }
+  }
+
+  try {
+    return await mergeGroupWithAI(openai, model, group.groupKey, group.groupId, successful, abortSignal)
+  } catch {
+    // Fallback to strategy merge
+    const { data } = strategyMerge(successful.map(r => ({ data: r.data! as Record<string, unknown> })), 'first_wins')
+    const imageResult = successful.find((r) => r.imageDataUrl)
+    return {
+      groupId: group.groupId,
+      groupKey: group.groupKey,
+      data,
+      imageDataUrl: imageResult?.imageDataUrl,
+      sourceFileNames: successful.map((r) => r.fileName),
+      mergedCount: successful.length,
+      mergeMethod: 'fallback_strategy',
+      conflicts: [],
+    }
+  }
 }
 
 // ─── POST handler ────────────────────────────────────────────────────────────
@@ -392,7 +268,7 @@ export async function POST(request: NextRequest) {
   const abortController = new AbortController()
 
   try {
-    // Security: check request body size
+    // Security: check request body size (content-length can be missing in chunked encoding)
     const contentLength = request.headers.get('content-length')
     if (contentLength && parseInt(contentLength, 10) > MAX_REQUEST_SIZE) {
       return new Response(JSON.stringify({ error: '请求体过大，最大允许 100MB' }), {
@@ -401,18 +277,36 @@ export async function POST(request: NextRequest) {
       })
     }
 
+    // Clone body stream and measure actual bytes as a safety net
+    const bodyClone = request.clone()
+    let actualSize = 0
+    const reader = bodyClone.body?.getReader()
+    if (reader) {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        actualSize += value.byteLength
+        if (actualSize > MAX_REQUEST_SIZE) {
+          reader.cancel()
+          return new Response(JSON.stringify({ error: '请求体过大，最大允许 100MB' }), {
+            status: 413,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+      }
+    }
+
     const body: ExtractRequestBody = await request.json()
     const {
       files,
-      template,
       imageCompressThreshold = Number(process.env.IMAGE_COMPRESS_THRESHOLD) || 20,
     } = body
 
-    // All model settings from .env
+    // All model settings from .env (trim to avoid whitespace issues)
     const apiSettings: ApiSettings = {
-      baseUrl: process.env.API_BASE_URL || '',
-      apiKey: process.env.API_KEY || '',
-      model: process.env.API_MODEL || '',
+      baseUrl: (process.env.API_BASE_URL || '').trim(),
+      apiKey: (process.env.API_KEY || '').trim(),
+      model: (process.env.API_MODEL || '').trim(),
       temperature: Number(process.env.API_TEMPERATURE) || 0.3,
     }
 
@@ -430,7 +324,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Security: SSRF prevention - block private/internal IPs
+    // Security: SSRF prevention
     if (isPrivateHost(apiSettings.baseUrl)) {
       return new Response(JSON.stringify({ error: '不允许访问内网地址' }), {
         status: 400,
@@ -457,215 +351,222 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        const results: { fileId: number; fileName: string; success: boolean; data?: unknown; error?: string }[] = []
-        let successCount = 0
-        let errorCount = 0
+        try {
+          // ── Phase 0: File grouping ─────────────────────────────────────────
+          send('phase', { phase: 'grouping' })
+          const fileGroups = groupFilesByPrefix(files)
+          send('grouping_done', { groups: fileGroups.map((g) => ({ groupId: g.groupId, label: g.groupKey, fileCount: g.files.length })) })
 
-        const systemMessage = '你是一个专业的文档内容提取助手。请严格按照用户要求的字段格式提取信息，以JSON格式返回。'
+          // ── Phase 1: Per-file extraction ─────────────────────────────────
+          send('phase', { phase: 'extracting' })
+          const perFileResults: PerFileResult[] = []
 
-        await workerPool(files, 3, async (file, index) => {
-          const fileId = index
-          const fileName = file.name
+          const MAX_RETRIES = 3
 
-          send('file_start', { fileId, fileName })
+          await workerPool(files, 3, async (file, index) => {
+            const fileId = String(index)
+            const fileName = file.name
+            const group = findGroupForFile(fileGroups, file.id)
 
-          try {
-            // Parse file content
+            send('file_start', { fileId, fileName, groupId: group.groupId })
+
             const parsed = await parseFileContent(file, imageCompressThreshold)
 
-            // Build user message
-            const hasFields = template.fields.length > 0
-            const fieldDescriptions = hasFields
-              ? template.fields
-                  .map((f) => {
-                    let desc = `- ${f.name}`;
-                    if (f.type === 'date') desc += '：请统一为YYYY-MM-DD格式';
-                    if (f.type === 'measurement') desc += '：请返回格式 {"value": 数值, "unit": "单位"}';
-                    if (f.description) desc += `（${f.description}）`;
-                    return desc;
-                  })
-                  .join('\n') + '\n\n' +
-                `仅提取上述列出的字段名对应的数据，不要添加任何额外字段。字段类型为${template.fields.map(f => f.type).join(', ')}。`
-              : ''
-
-            const hasImages = parsed.images && parsed.images.length > 0
-            const isImageFile = file.dataUrl && /^data:image\//.test(file.dataUrl)
+            // Build prompt text
+            let promptText = ''
+            if (parsed.text) {
+              promptText = TEXT_EXTRACTION_PREFIX + parsed.text
+            } else {
+              promptText = '请从文档中提取所有结构化信息。'
+            }
 
             const contentParts: OpenAI.ChatCompletionContentPart[] = []
+            contentParts.push({ type: 'text', text: promptText })
 
-            // Build prompt text
-            let promptText = template.prompt
-            if (hasFields) {
-              promptText += `\n\n请提取以下字段信息：\n${fieldDescriptions}`
-              if (hasImages || isImageFile) {
-                const fieldNames = template.fields.map((f) => f.name).join('、')
-                promptText += `\n\n【重要】文档为图片，请对每个字段返回其在图片中的位置坐标（归一化百分比，0-100）：
-返回格式示例：{"${template.fields[0]?.name || '字段名'}": {"value": "提取的值", "x": 10.5, "y": 20.3, "width": 30.0, "height": 5.0}}
-- x: 字段区域左边界占图片宽度的百分比
-- y: 字段区域上边界占图片高度的百分比
-- width: 字段区域宽度占图片宽度的百分比
-- height: 字段区域高度占图片高度的百分比
-请确保每个字段 "${fieldNames}" 都包含坐标信息。`
-              }
-            } else if (hasImages || isImageFile) {
-              // No fields defined but has images: prompt for free-form extraction with coordinates
-              promptText += `\n\n【重要】文档为图片，请根据提示词提取信息并以JSON格式返回。对每个提取的信息项，同时返回其在图片中的位置坐标（归一化百分比，0-100）：
-返回格式示例：{"提取的信息名": {"value": "提取的值", "x": 10.5, "y": 20.3, "width": 30.0, "height": 5.0}}
-- x: 信息区域左边界占图片宽度的百分比
-- y: 信息区域上边界占图片高度的百分比
-- width: 信息区域宽度占图片宽度的百分比
-- height: 信息区域高度占图片高度的百分比`
-            } else {
-              // No fields, no images: just ask for structured JSON
-              promptText += '\n\n请以JSON格式返回提取的结构化信息。'
-            }
-
-            // Add text content
-            if (parsed.text) {
-              contentParts.push({
-                type: 'text',
-                text: promptText + '\n\n文档内容：\n' + parsed.text,
-              })
-            } else if (hasImages || isImageFile) {
-              // Image-only file: text part just contains the prompt
-              contentParts.push({ type: 'text', text: promptText })
-            } else {
-              // Fallback: prompt only
-              contentParts.push({ type: 'text', text: promptText })
-            }
-
-            // Add images if any
+            // Add images
             if (parsed.images && parsed.images.length > 0) {
               for (const img of parsed.images) {
                 contentParts.push({
                   type: 'image_url',
-                  image_url: {
-                    url: img.dataUrl,
-                    detail: 'auto',
-                  },
+                  image_url: { url: img.dataUrl, detail: 'auto' },
                 })
               }
             }
 
-            const messages: OpenAI.ChatCompletionMessageParam[] = [
-              { role: 'system', content: systemMessage },
+            const baseMessages: OpenAI.ChatCompletionMessageParam[] = [
+              { role: 'system', content: EXTRACTION_SYSTEM_MESSAGE },
               { role: 'user', content: contentParts.length === 1 && contentParts[0].type === 'text'
                 ? contentParts[0].text
                 : contentParts as OpenAI.ChatCompletionContentPart[],
               },
             ]
 
-            // Build request options
-            const requestOptions: OpenAI.ChatCompletionCreateParams = {
+            const requestOptions: Record<string, unknown> = {
               model: apiSettings.model,
-              messages,
               temperature: apiSettings.temperature ?? 0.1,
               stream: true,
             }
 
-            // For reasoning models: add reasoning_effort
-            // StepFun step-3.7-flash/step-3.5-flash support BOTH reasoning_effort AND response_format
-            // OpenAI o-series models support reasoning_effort but NOT response_format
-            const isStepModel = /^step-/.test(apiSettings.model.toLowerCase())
             if (isReasoningModel(apiSettings.model)) {
-              (requestOptions as unknown as Record<string, unknown>).reasoning_effort = 'low'
+              requestOptions.reasoning_effort = 'low'
             }
-            // All models get response_format for structured JSON output
-            // Step models support json_object; OpenAI o-series will ignore it or error, but
-            // the 5-layer JSON parser handles non-JSON output gracefully
             if (!apiSettings.model.toLowerCase().startsWith('o')) {
-              (requestOptions as unknown as Record<string, unknown>).response_format = { type: 'json_object' }
+              requestOptions.response_format = { type: 'json_object' }
             }
 
-            // Call OpenAI with streaming
-            const completion = await openai.chat.completions.create(
-              requestOptions as OpenAI.ChatCompletionCreateParamsNonStreaming & { stream: true },
-              { signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(120_000)]) },
-            )
+            let lastError = ''
 
-            // Collect streamed content
-            let fullContent = ''
-
-            // Check if response is a stream (AsyncIterable)
-            if (Symbol.asyncIterator in Object(completion)) {
-              // It's a stream - iterate over chunks
-              for await (const chunk of completion as unknown as AsyncIterable<OpenAI.ChatCompletionChunk>) {
-                const delta = chunk.choices?.[0]?.delta?.content
-                if (delta) {
-                  fullContent += delta
+            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+              try {
+                if (attempt > 1) {
+                  send('file_retry', { fileId, fileName, attempt })
                 }
-              }
-            } else {
-              // Non-streaming response (some providers return this despite stream: true)
-              const msg = (completion as unknown as OpenAI.ChatCompletion).choices?.[0]?.message
-              fullContent = msg?.content || ''
-            }
 
-            // Parse the JSON response with 5-layer fallback
-            const extracted = parseJsonResponse(fullContent)
+                // Each retry uses a fresh messages array (no conversation context)
+                const completion = await openai.chat.completions.create(
+                  { ...requestOptions, messages: baseMessages } as any,
+                  { signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(120_000)]) },
+                )
 
-            // Separate values from coordinate regions
-            const { data, regions } = separateRegionsAndValues(extracted)
-
-            // Apply type-specific normalization (date format, measurement structure)
-            const normalizedData = hasFields ? applyTypeNormalization(data, template.fields) : data
-
-            // Defense-in-depth: filter out any fields not in the template
-            // Also filter coordinate/metadata fields that AI may return as top-level keys
-            const META_KEYS = new Set(['value', 'x', 'y', 'width', 'height', 'label', 'confidence', 'source', 'polygon', 'attributes', 'group', 'index', 'type', 'required', 'name'])
-            const allowedFieldNames = new Set(template.fields.map((f) => f.name))
-            const filteredData: Record<string, unknown> = {}
-            if (hasFields && allowedFieldNames.size > 0) {
-              for (const [key, val] of Object.entries(normalizedData)) {
-                if (allowedFieldNames.has(key)) {
-                  filteredData[key] = val
+                let fullContent = ''
+                if (Symbol.asyncIterator in Object(completion)) {
+                  for await (const chunk of completion as unknown as AsyncIterable<OpenAI.ChatCompletionChunk>) {
+                    const delta = chunk.choices?.[0]?.delta?.content
+                    if (delta) fullContent += delta
+                  }
+                } else {
+                  const msg = (completion as unknown as OpenAI.ChatCompletion).choices?.[0]?.message
+                  fullContent = msg?.content || ''
                 }
-              }
-            } else {
-              // No template fields defined — keep all except known metadata
-              for (const [key, val] of Object.entries(normalizedData)) {
-                if (!META_KEYS.has(key)) {
-                  filteredData[key] = val
+
+                // Parse JSON with 5-layer fallback
+                const extracted = parseJsonResponse(fullContent)
+                const data = (extracted && typeof extracted === 'object' && !Array.isArray(extracted))
+                  ? extracted as Record<string, unknown>
+                  : { result: extracted }
+                const normalizedData = normalizeExtractedData(data)
+
+                let imageDataUrl: string | undefined
+                if (file.dataUrl && /^data:image\//.test(file.dataUrl)) {
+                  imageDataUrl = file.dataUrl
                 }
+
+                perFileResults.push({
+                  fileId,
+                  fileName,
+                  groupId: group.groupId,
+                  success: true,
+                  data: normalizedData,
+                  imageDataUrl,
+                })
+
+                send('file_complete', {
+                  fileId,
+                  fileName,
+                  groupId: group.groupId,
+                  success: true,
+                  data: normalizedData,
+                  imageDataUrl,
+                })
+
+                lastError = '' // clear on success
+                break
+              } catch (err) {
+                lastError = err instanceof Error ? err.message : '未知错误'
               }
             }
 
-            // Determine imageDataUrl for image files
-            let imageDataUrl: string | undefined
-            if (file.dataUrl && /^data:image\//.test(file.dataUrl)) {
-              imageDataUrl = file.dataUrl
+            // All retries exhausted
+            if (lastError) {
+              perFileResults.push({
+                fileId,
+                fileName,
+                groupId: group.groupId,
+                success: false,
+                error: lastError,
+              })
+              send('file_complete', {
+                fileId,
+                fileName,
+                groupId: group.groupId,
+                success: false,
+                error: lastError,
+              })
             }
+          })
 
-            successCount++
-            results.push({ fileId, fileName, success: true, data: filteredData })
-            send('file_complete', {
-              fileId,
-              fileName,
-              success: true,
-              data: filteredData,
-              regions: Object.keys(regions).length > 0 ? regions : undefined,
-              imageDataUrl,
-              rawResponse: fullContent.substring(0, 2000),
-            })
-          } catch (err) {
-            errorCount++
-            const errorMessage = err instanceof Error ? err.message : '未知错误'
-            results.push({ fileId, fileName, success: false, error: errorMessage })
-            send('file_complete', { fileId, fileName, success: false, error: errorMessage })
+          // ── Phase 2: Schema alignment + flattening (before merge) ──────────
+          send('phase', { phase: 'aligning' })
+          const fieldPaths = collectFieldPaths(perFileResults)
+          let schema
+          try {
+            schema = await alignSchemaWithAI(openai, apiSettings.model, fieldPaths, abortController.signal)
+          } catch {
+            schema = alignSchema(fieldPaths)
           }
-        })
 
-        // Send final summary
-        send('all_done', {
-          totalFiles: files.length,
-          successCount,
-          errorCount,
-        })
+          // Apply flattened schema to each PerFileResult
+          const alignedResults = applyFlattenedSchemaToResults(perFileResults, schema)
 
-        try {
+          send('schema_ready', {
+            headers: schema.field_order,
+            totalRows: alignedResults.filter((r) => r.success).length,
+          })
+
+          // ── Phase 3: Group merge (fields now aligned and flat) ────────────
+          send('phase', { phase: 'merging' })
+          const mergedRecords: MergedRecord[] = []
+
+          for (const group of fileGroups) {
+            const groupAligned = alignedResults.filter((r) => r.groupId === group.groupId)
+
+            send('merge_start', {
+              groupId: group.groupId,
+              label: group.groupKey,
+              fileCount: groupAligned.length,
+              successCount: groupAligned.filter((r) => r.success).length,
+            })
+
+            const merged = await mergeGroupWithFallback(openai, apiSettings.model, group, groupAligned, abortController.signal)
+            mergedRecords.push(merged)
+
+            send('group_merged', {
+              groupId: merged.groupId,
+              groupKey: merged.groupKey,
+              sourceFileNames: merged.sourceFileNames,
+              mergedCount: merged.mergedCount,
+              mergeMethod: merged.mergeMethod,
+              conflicts: merged.conflicts,
+            })
+          }
+
+          // ── Final: build UnifiedSchema and send all_done ──────────────────
+          const unifiedSchema = buildUnifiedSchemaFromMerged(mergedRecords, schema.field_order)
+
+          send('all_done', {
+            totalFiles: files.length,
+            totalGroups: fileGroups.length,
+            mergedGroups: mergedRecords.length,
+            rows: unifiedSchema.rows.map((row) => ({
+              id: row.id,
+              label: row.label,
+              data: row.data,
+              sourceFiles: row.sourceFiles,
+              isMerged: row.isMerged,
+              fieldConsistency: row.fieldConsistency,
+              mergeMethod: row.mergeMethod,
+            })),
+          })
+
           controller.close()
-        } catch {
-          // Already closed
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : '服务器内部错误'
+          send('error', { phase: 'unknown', message: errorMessage })
+          try {
+            controller.close()
+          } catch {
+            // Already closed
+          }
         }
       },
       cancel() {

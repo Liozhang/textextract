@@ -11,14 +11,16 @@ import {
   ChevronRight,
   FileSearch,
   BarChart3,
-  ImageIcon,
   GitMerge,
-  CheckSquare,
   List,
+  Loader2,
+  FolderTree,
+  Layers,
+  Merge,
+  AlignJustify,
 } from 'lucide-react';
-import { useStore, type FieldRegion } from '@/lib/store';
+import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
-import { mergeByFilename, mergeByPatientAndDate, type MergeStrategy } from '@/lib/merge-utils';
 import {
   Card,
   CardContent,
@@ -27,9 +29,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Separator } from '@/components/ui/separator';
 import {
   Table,
@@ -46,19 +46,32 @@ import {
 } from '@/components/ui/collapsible';
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Types for backend pipeline events
 // ---------------------------------------------------------------------------
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+interface PipelineRow {
+  id: string;
+  label: string;
+  data: Record<string, unknown>;
+  sourceFiles: string[];
+  isMerged: boolean;
+  fieldConsistency?: Record<string, boolean>;
+  mergeMethod?: string;
 }
+
+interface PipelinePhase {
+  key: 'grouping' | 'extracting' | 'aligning' | 'merging';
+  status: 'pending' | 'active' | 'done';
+  detail: string;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /** Parse SSE text into { event, data } chunks. */
 function parseSSEChunks(text: string): { event: string; data: string }[] {
   const events: { event: string; data: string }[] = [];
-  // SSE uses double-newline as delimiter
   const blocks = text.split('\n\n').filter(Boolean);
   for (const block of blocks) {
     let event = '';
@@ -72,69 +85,114 @@ function parseSSEChunks(text: string): { event: string; data: string }[] {
   return events;
 }
 
+/** Render a field value with type-aware formatting */
+function renderFieldValue(value: unknown): string {
+  if (value == null) return '\u2014';
+  if (typeof value === 'object' && !Array.isArray(value) && 'value' in value && 'unit' in value) {
+    const v = (value as { value: unknown; unit: string }).value;
+    const u = (value as { value: unknown; unit: string }).unit;
+    return `${v} ${u}`;
+  }
+  if (Array.isArray(value)) return value.map(String).join(', ');
+  return String(value);
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline Phase Indicator
+// ---------------------------------------------------------------------------
+
+const PHASE_META: Record<string, { icon: typeof FolderTree; labelKey: string }> = {
+  grouping: { icon: FolderTree, labelKey: 'pipeline.phaseGrouping' },
+  extracting: { icon: Layers, labelKey: 'pipeline.phaseExtracting' },
+  aligning: { icon: AlignJustify, labelKey: 'pipeline.phaseAligning' },
+  merging: { icon: Merge, labelKey: 'pipeline.phaseMerging' },
+};
+
+function PhaseIndicator({ phases }: { phases: PipelinePhase[] }) {
+  const t = useT();
+  return (
+    <div className="flex items-center gap-1">
+      {phases.map((phase, idx) => {
+        const meta = PHASE_META[phase.key] ?? PHASE_META.extracting;
+        const Icon = meta.icon;
+        const isActive = phase.status === 'active';
+        const isDone = phase.status === 'done';
+
+        return (
+          <div key={phase.key} className="flex items-center">
+            <div
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                isActive
+                  ? 'bg-primary text-primary-foreground'
+                  : isDone
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-muted-foreground/50'
+              }`}
+            >
+              {isActive ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : isDone ? (
+                <CheckCircle2 className="size-3.5" />
+              ) : (
+                <Icon className="size-3.5" />
+              )}
+              <span>{t(meta.labelKey)}</span>
+              {phase.detail && (
+                <span className="opacity-70 ml-0.5">
+                  {phase.detail}
+                </span>
+              )}
+            </div>
+            {idx < phases.length - 1 && (
+              <div className={`mx-1 h-px w-4 ${isDone ? 'bg-primary/30' : 'bg-muted'}`} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-/** Unified display row type */
-interface DisplayRow {
-  id: string;
-  label: string;
-  data: Record<string, unknown>;
-  regions: Record<string, FieldRegion>;
-  imageDataUrl?: string;
-  isMerged: boolean;
-  sourceFiles: string[];
-  fieldConsistency?: Record<string, boolean>;
-}
-
-/** Render a field value with type-aware formatting */
-function renderFieldValue(value: unknown): string {
-  if (value == null) return '—'
-  if (typeof value === 'object' && !Array.isArray(value) && 'value' in value && 'unit' in value) {
-    const v = (value as { value: unknown; unit: string }).value
-    const u = (value as { value: unknown; unit: string }).unit
-    return `${v} ${u}`
-  }
-  if (Array.isArray(value)) return value.map(String).join(', ')
-  return String(value)
-}
-
 export default function ReviewPanel() {
   const t = useT();
   const files = useStore((s) => s.files);
-  const template = useStore((s) => s.template);
-  const results = useStore((s) => s.results);
   const progress = useStore((s) => s.progress);
   const clearResults = useStore((s) => s.clearResults);
   const addResult = useStore((s) => s.addResult);
   const setProgress = useStore((s) => s.setProgress);
-  const selectedFileId = useStore((s) => s.selectedFileId);
-  const setSelectedFileId = useStore((s) => s.setSelectedFileId);
   const setMergedExportData = useStore((s) => s.setMergedExportData);
 
   const abortRef = useRef<AbortController | null>(null);
   const [hasExtracted, setHasExtracted] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
-  const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
-  const [mergeStrategy, setMergeStrategy] = useState<MergeStrategy>('first_wins');
-  // Manual merges: { ids: merged row IDs, merged: resulting display row }
-  const [manualMerges, setManualMerges] = useState<
-    Array<{
-      ids: Set<string>;
-      merged: DisplayRow;
-    }>
-  >([]);
 
-  // Track "all done" or "error" status derived from results
-  const successfulCount = results.filter((r) => r.success).length;
-  const failedCount = results.filter((r) => !r.success).length;
+  // Pipeline result state
+  const [pipelineRows, setPipelineRows] = useState<PipelineRow[]>([]);
+  const [schemaHeaders, setSchemaHeaders] = useState<string[]>([]);
+  const [phases, setPhases] = useState<PipelinePhase[]>([
+    { key: 'grouping', status: 'pending', detail: '' },
+    { key: 'extracting', status: 'pending', detail: '' },
+    { key: 'aligning', status: 'pending', detail: '' },
+    { key: 'merging', status: 'pending', detail: '' },
+  ]);
+
   const isExtracting = progress.status === 'extracting';
-
-  // Derived: can we start extraction?
   const canStart = files.length > 0;
 
-  // Cleanup on unmount
+  const mergedHeaders = useMemo(() => {
+    if (schemaHeaders.length > 0) return schemaHeaders;
+    const headerSet = new Set<string>();
+    for (const row of pipelineRows) {
+      Object.keys(row.data).forEach((k) => headerSet.add(k));
+    }
+    return Array.from(headerSet);
+  }, [pipelineRows, schemaHeaders]);
+
+  // Cleanup
   useEffect(() => {
     return () => {
       if (abortRef.current) {
@@ -144,25 +202,22 @@ export default function ReviewPanel() {
     };
   }, []);
 
-  // Auto-select first image result when extraction completes
-  useEffect(() => {
-    if (progress.status === 'done' && results.length > 0) {
-      const firstImageResult = results.find((r) => r.success && r.imageDataUrl);
-      if (firstImageResult && !selectedFileId) {
-        setSelectedFileId(firstImageResult.fileId);
-      }
-    }
-  }, [progress.status, results, selectedFileId, setSelectedFileId]);
-
   // ------------------------------------------------------------------
   // Start extraction
   // ------------------------------------------------------------------
   const handleStart = useCallback(async () => {
     if (isExtracting) return;
 
-    // Clear previous results
     clearResults();
     setHasExtracted(false);
+    setPipelineRows([]);
+    setSchemaHeaders([]);
+    setPhases([
+      { key: 'grouping', status: 'pending', detail: '' },
+      { key: 'extracting', status: 'pending', detail: '' },
+      { key: 'aligning', status: 'pending', detail: '' },
+      { key: 'merging', status: 'pending', detail: '' },
+    ]);
 
     const total = files.length;
     setProgress({
@@ -172,7 +227,6 @@ export default function ReviewPanel() {
       status: 'extracting',
     });
 
-    // Prepare request body
     const body = {
       files: files.map((f) => ({
         id: f.id,
@@ -182,10 +236,6 @@ export default function ReviewPanel() {
         content: f.content,
         dataUrl: f.dataUrl,
       })),
-      template: {
-        prompt: template.prompt,
-        fields: template.fields,
-      },
     };
 
     const controller = new AbortController();
@@ -209,15 +259,22 @@ export default function ReviewPanel() {
       const decoder = new TextDecoder();
       let buffer = '';
 
+      // Local counters for progress tracking
+      let completedFiles = 0;
+      let totalFiles = total;
+      let groupsDone = false;
+      const groupLabels: string[] = [];
+      let mergedGroups = 0;
+      let totalGroups = 0;
+      let extractedCount = 0;
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
 
-        // Parse SSE blocks from buffer
         const events = parseSSEChunks(buffer);
-        // Keep incomplete trailing data
         const lastNewline = buffer.lastIndexOf('\n\n');
         if (lastNewline !== -1) {
           buffer = buffer.slice(lastNewline + 2);
@@ -228,40 +285,167 @@ export default function ReviewPanel() {
             const parsed = JSON.parse(evt.data);
 
             switch (evt.event) {
-              case 'file_start': {
-                setProgress({
-                  currentFile: parsed.fileName ?? '',
-                });
+              case 'phase': {
+                const phase = parsed.phase as string;
+                setPhases((prev) =>
+                  prev.map((p) =>
+                    p.key === phase
+                      ? { ...p, status: 'active', detail: '' }
+                      : p.status === 'active'
+                        ? { ...p, status: 'active' }
+                        : p,
+                  ),
+                );
                 break;
               }
+
+              case 'grouping_done': {
+                totalGroups = parsed.groups?.length ?? 0;
+                for (const g of parsed.groups ?? []) {
+                  groupLabels.push(g.label);
+                }
+                setPhases((prev) =>
+                  prev.map((p) =>
+                    p.key === 'grouping'
+                      ? { ...p, status: 'done', detail: `${totalGroups}` }
+                      : p,
+                  ),
+                );
+                groupsDone = true;
+                break;
+              }
+
+              case 'file_retry': {
+                // Update extracting phase detail to show retry info
+                setPhases((prev) =>
+                  prev.map((p) =>
+                    p.key === 'extracting'
+                      ? { ...p, detail: `(${completedFiles + 1}/${totalFiles}) retry ${parsed.attempt}` }
+                      : p,
+                  ),
+                );
+                break;
+              }
+
+              case 'file_start': {
+                setPhases((prev) =>
+                  prev.map((p) =>
+                    p.key === 'extracting'
+                      ? { ...p, status: 'active', detail: `(${completedFiles + 1}/${totalFiles})` }
+                      : p,
+                  ),
+                );
+                setProgress({ currentFile: parsed.fileName ?? '' });
+                break;
+              }
+
               case 'file_complete': {
+                completedFiles++;
+                extractedCount += parsed.success ? 1 : 0;
+                setProgress({ completedFiles });
+                if (completedFiles >= totalFiles && groupsDone) {
+                  setPhases((prev) =>
+                    prev.map((p) =>
+                      p.key === 'extracting'
+                        ? { ...p, status: 'done', detail: `(${extractedCount}/${totalFiles})` }
+                        : p,
+                    ),
+                  );
+                }
                 addResult({
                   fileId: String(parsed.fileId ?? ''),
                   fileName: parsed.fileName ?? '',
                   success: parsed.success ?? false,
                   data: parsed.data,
-                  rawResponse: parsed.rawResponse,
                   error: parsed.error,
-                  regions: parsed.regions,
-                  imageDataUrl: parsed.imageDataUrl,
                 });
-                setProgress((prev) => ({
-                  completedFiles: prev.completedFiles + 1,
-                }));
                 break;
               }
+
+              case 'merge_start': {
+                mergedGroups++;
+                setPhases((prev) =>
+                  prev.map((p) =>
+                    p.key === 'merging'
+                      ? { ...p, status: 'active', detail: `${parsed.label} (${parsed.fileCount})` }
+                      : p,
+                  ),
+                );
+                break;
+              }
+
+              case 'group_merged': {
+                const method = parsed.mergeMethod ?? '';
+                const count = parsed.mergedCount ?? 0;
+                const label = parsed.groupKey ?? '';
+                setPhases((prev) =>
+                  prev.map((p) =>
+                    p.key === 'merging'
+                      ? {
+                          ...p,
+                          detail: t('pipeline.mergeProgress', {
+                            current: mergedGroups,
+                            total: totalGroups,
+                          }),
+                        }
+                      : p,
+                  ),
+                );
+                break;
+              }
+
+              case 'schema_ready': {
+                setSchemaHeaders(parsed.headers ?? []);
+                setPhases((prev) =>
+                  prev.map((p) =>
+                    p.key === 'aligning' ? { ...p, status: 'done', detail: `${parsed.headers?.length ?? 0}` } : p,
+                  ),
+                );
+                break;
+              }
+
               case 'all_done': {
+                setPhases((prev) =>
+                  prev.map((p) => ({ ...p, status: 'done' })),
+                );
                 setProgress({ status: 'done' });
                 setHasExtracted(true);
+
+                const rows: PipelineRow[] = (parsed.rows ?? []).map((r: any) => ({
+                  id: r.id ?? '',
+                  label: r.label ?? '',
+                  data: r.data ?? {},
+                  sourceFiles: r.sourceFiles ?? [],
+                  isMerged: r.isMerged ?? false,
+                  fieldConsistency: r.fieldConsistency,
+                  mergeMethod: r.mergeMethod,
+                }));
+                setPipelineRows(rows);
+
+                setMergedExportData(
+                  rows.map((row) => ({
+                    label: row.label,
+                    data: row.data,
+                    sourceFiles: row.sourceFiles,
+                    success: true,
+                  })),
+                );
                 break;
               }
+
               case 'error': {
+                setPhases((prev) =>
+                  prev.map((p) => {
+                    if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
+                    return p;
+                  }),
+                );
                 setProgress({ status: 'error' });
                 addResult({
                   fileId: 'system',
                   fileName: t('review.systemError'),
                   success: false,
-                  error: parsed.error ?? t('review.unknownError'),
+                  error: parsed.message ?? t('review.unknownError'),
                 });
                 setHasExtracted(true);
                 break;
@@ -273,15 +457,27 @@ export default function ReviewPanel() {
         }
       }
 
-      // If we exit the loop and status is still extracting, mark as done
       if (useStore.getState().progress.status === 'extracting') {
+        setPhases((prev) => prev.map((p) => ({ ...p, status: 'done' })));
         setProgress({ status: 'done' });
         setHasExtracted(true);
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
         setProgress({ status: 'idle', currentFile: '' });
+        setPhases((prev) =>
+          prev.map((p) => {
+            if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
+            return p;
+          }),
+        );
       } else {
+        setPhases((prev) =>
+          prev.map((p) => {
+            if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
+            return p;
+          }),
+        );
         setProgress({ status: 'error' });
         const errorMessage =
           err instanceof Error ? err.message : t('review.unknownError');
@@ -298,12 +494,13 @@ export default function ReviewPanel() {
     }
   }, [
     files,
-    template,
     isExtracting,
     clearResults,
     setProgress,
     addResult,
+    setMergedExportData,
     progress.status,
+    t,
   ]);
 
   // ------------------------------------------------------------------
@@ -316,224 +513,6 @@ export default function ReviewPanel() {
     }
     setProgress({ status: 'idle', currentFile: '' });
   }, [setProgress]);
-
-  // ------------------------------------------------------------------
-  // Progress percentage
-  // ------------------------------------------------------------------
-  const progressPercent =
-    progress.totalFiles > 0
-      ? Math.round((progress.completedFiles / progress.totalFiles) * 100)
-      : 0;
-
-  // ------------------------------------------------------------------
-  // Auto-merge by patient + date
-  // ------------------------------------------------------------------
-  const mergeReport = useMemo(() => {
-    if (progress.status !== 'done') return null;
-    // Strategy: 1) group by filename prefix first, 2) fallback to patient+date for remaining
-    const byFilename = mergeByFilename(results, { fallbackLabel: t('review.mergedRecords'), strategy: mergeStrategy });
-    if (byFilename.groups.length > 0) {
-      // Check if remaining unmerged results could be grouped by patient+date
-      if (byFilename.unmerged.length >= 2) {
-        const byPatient = mergeByPatientAndDate(byFilename.unmerged, { fallbackLabel: t('review.mergedRecords'), strategy: mergeStrategy });
-        return {
-          groups: [...byFilename.groups, ...byPatient.groups],
-          unmerged: byPatient.unmerged,
-          mergedCount: byFilename.mergedCount + byPatient.mergedCount,
-          mergeKeys: { patients: [...byFilename.mergeKeys.patients, ...byPatient.mergeKeys.patients], dates: [...byFilename.mergeKeys.dates, ...byPatient.mergeKeys.dates] },
-        };
-      }
-      return byFilename;
-    }
-    return mergeByPatientAndDate(results, { fallbackLabel: t('review.mergedRecords'), strategy: mergeStrategy });
-  }, [results, progress.status, mergeStrategy, t]);
-
-  const hasMerged = mergeReport && mergeReport.groups.length > 0;
-
-  // ------------------------------------------------------------------
-  // Merged data for "全部数据" view
-  // ------------------------------------------------------------------
-  const allSuccessfulResults = results.filter((r) => r.success);
-  const mergedHeaders = (() => {
-    const headerSet = new Set<string>();
-    for (const r of allSuccessfulResults) {
-      if (r.data) {
-        Object.keys(r.data).forEach((k) => headerSet.add(k));
-      }
-    }
-    // Also include fields from merged groups
-    if (mergeReport) {
-      for (const g of mergeReport.groups) {
-        Object.keys(g.data).forEach((k) => headerSet.add(k));
-      }
-    }
-    return Array.from(headerSet);
-  })();
-
-  // Rows to display: unmerged + merged groups
-  const displayRows: DisplayRow[] = useMemo(() => {
-    if (!mergeReport || mergeReport.groups.length === 0) {
-      return allSuccessfulResults.map((r) => ({
-        id: r.fileId,
-        label: r.fileName,
-        data: r.data || {},
-        regions: r.regions || {},
-        imageDataUrl: r.imageDataUrl,
-        isMerged: false,
-        sourceFiles: [r.fileName],
-      }));
-    }
-
-    const rows: DisplayRow[] = [];
-
-    // Add unmerged records
-    for (const r of mergeReport.unmerged) {
-      if (r.success && r.data) {
-        rows.push({
-          id: r.fileId,
-          label: r.fileName,
-          data: r.data,
-          regions: r.regions || {},
-          imageDataUrl: r.imageDataUrl,
-          isMerged: false,
-          sourceFiles: [r.fileName],
-        });
-      }
-    }
-
-    // Add merged groups
-    for (const g of mergeReport.groups) {
-      rows.push({
-        id: g.fileId,
-        label: g.label,
-        data: g.data,
-        regions: g.regions,
-        imageDataUrl: g.imageDataUrl,
-        isMerged: true,
-        sourceFiles: g.fileNames,
-        fieldConsistency: g.fieldConsistency,
-      });
-    }
-
-    return rows;
-  }, [allSuccessfulResults, mergeReport]);
-
-  // Apply manual merges: hide consumed rows, add merged results
-  const finalDisplayRows: DisplayRow[] = useMemo(() => {
-    if (manualMerges.length === 0) return displayRows;
-
-    const consumedIds = new Set<string>();
-    const mergedRows: DisplayRow[] = [];
-
-    for (const mm of manualMerges) {
-      mm.ids.forEach((id) => consumedIds.add(id));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mergedRows.push(mm.merged);
-    }
-
-    const visible = displayRows.filter((r) => !consumedIds.has(r.id));
-    return [...visible, ...mergedRows];
-  }, [displayRows, manualMerges]);
-
-  // ------------------------------------------------------------------
-  // Manual merge: merge selected rows
-  // ------------------------------------------------------------------
-  const handleManualMerge = useCallback(() => {
-    if (selectedRows.size < 2) return;
-
-    const rowsToMerge = displayRows.filter((r) => selectedRows.has(r.id));
-    if (rowsToMerge.length < 2) return;
-
-    // Build merged data
-    const mergedData: Record<string, unknown> = {};
-    const mergedRegions: Record<string, { x: number; y: number; width: number; height: number }> = {};
-    const fileNames: string[] = [];
-    let mergedImageDataUrl: string | undefined;
-
-    for (const row of rowsToMerge) {
-      // Merge data: apply current strategy
-      for (const [key, val] of Object.entries(row.data)) {
-        const v = val != null ? String(val).trim() : '';
-        const current = mergedData[key] != null ? String(mergedData[key]).trim() : '';
-        const shouldOverwrite =
-          mergeStrategy === 'latest_wins' ? v !== '' :
-          mergeStrategy === 'longest_wins' ? v.length > current.length :
-          v !== '' && current === '';
-        if (shouldOverwrite) {
-          mergedData[key] = val;
-        }
-      }
-      Object.assign(mergedRegions, row.regions);
-      fileNames.push(...row.sourceFiles);
-      if (!mergedImageDataUrl && row.imageDataUrl) {
-        mergedImageDataUrl = row.imageDataUrl;
-      }
-    }
-
-    // Compute field consistency for manual merge
-    const allKeys = new Set(rowsToMerge.flatMap((r) => Object.keys(r.data)));
-    const manualConsistency: Record<string, boolean> = {};
-    for (const key of allKeys) {
-      const values = rowsToMerge
-        .map((r) => r.data[key])
-        .filter((v) => v != null && String(v).trim() !== '')
-        .map((v) => String(v).trim());
-      manualConsistency[key] = values.length <= 1 || values.every((v) => v === values[0]);
-    }
-
-    const ids = new Set(rowsToMerge.map((r) => r.id));
-    setManualMerges((prev) => [
-      ...prev,
-      {
-        ids,
-        merged: {
-          id: `manual-merged-${Date.now()}`,
-          label: fileNames.join(' + '),
-          data: mergedData,
-          regions: mergedRegions,
-          imageDataUrl: mergedImageDataUrl,
-          isMerged: true,
-          sourceFiles: fileNames,
-          fieldConsistency: manualConsistency,
-        },
-      },
-    ]);
-    setSelectedRows(new Set());
-  }, [selectedRows, displayRows, mergeStrategy]);
-
-  const toggleRowSelection = useCallback((id: string) => {
-    setSelectedRows((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  }, []);
-
-  // Clear selection when extraction starts
-  const wrappedHandleStart = useCallback(async () => {
-    setSelectedRows(new Set());
-    setManualMerges([]);
-    await handleStart();
-  }, [handleStart]);
-
-  // Derived: current preview data
-  const resultsWithImages = finalDisplayRows.filter((r) => r.imageDataUrl);
-
-  // Sync merged data to store for export panel
-  useEffect(() => {
-    setMergedExportData(
-      finalDisplayRows.map((row) => ({
-        label: row.label,
-        data: row.data,
-        sourceFiles: row.sourceFiles,
-        success: true,
-      })),
-    );
-  }, [finalDisplayRows, setMergedExportData]);
 
   // ------------------------------------------------------------------
   // Render
@@ -561,7 +540,7 @@ export default function ReviewPanel() {
               <Button
                 size="lg"
                 disabled={!canStart}
-                onClick={wrappedHandleStart}
+                onClick={handleStart}
               >
                 <Play className="size-4" />
                 {hasExtracted ? t('review.restart') : t('review.start')}
@@ -570,7 +549,7 @@ export default function ReviewPanel() {
                 <Button
                   variant="outline"
                   size="lg"
-                  onClick={wrappedHandleStart}
+                  onClick={handleStart}
                   disabled={!canStart}
                 >
                   <RotateCcw className="size-4" />
@@ -587,29 +566,37 @@ export default function ReviewPanel() {
           )}
         </div>
 
-        {/* ---------- Progress ---------- */}
-        {isExtracting && (
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">
-                {t('review.processing', { file: progress.currentFile || t('review.preparing') })}
-              </span>
-              <span className="font-medium">
-                {progress.completedFiles} / {progress.totalFiles}
-              </span>
-            </div>
-            <Progress value={progressPercent} className="h-2" />
+        {/* ---------- Pipeline Phase Indicator ---------- */}
+        {(isExtracting || (hasExtracted && phases.some((p) => p.status !== 'pending'))) && (
+          <PhaseIndicator phases={phases} />
+        )}
+
+        {/* ---------- File-level progress during extraction ---------- */}
+        {isExtracting && phases[1]?.status === 'active' && (
+          <div className="flex items-center justify-between text-sm text-muted-foreground">
+            <span className="truncate">
+              {progress.currentFile || t('review.preparing')}
+            </span>
+            <span className="font-medium tabular-nums">
+              {progress.completedFiles} / {progress.totalFiles}
+            </span>
           </div>
         )}
 
         {/* ---------- Status ---------- */}
-        {progress.status === 'done' && (
+        {progress.status === 'done' && !isExtracting && (
           <div className="flex items-center gap-2 text-sm text-emerald-600">
             <CheckCircle2 className="size-4" />
-            {t('review.complete')}
+            <span>
+              {t('review.completeSummary', {
+                groups: phases[0]?.detail || '0',
+                rows: pipelineRows.length,
+                fields: mergedHeaders.length,
+              })}
+            </span>
           </div>
         )}
-        {progress.status === 'error' && (
+        {progress.status === 'error' && !isExtracting && (
           <div className="flex items-center gap-2 text-sm text-destructive">
             <XCircle className="size-4" />
             {t('review.error')}
@@ -617,70 +604,21 @@ export default function ReviewPanel() {
         )}
 
         {/* ---------- Results ---------- */}
-        {(results.length > 0 || hasExtracted) && (
+        {(pipelineRows.length > 0 || hasExtracted) && (
           <div className="flex flex-col gap-4">
             <Separator />
 
-            {/* ---- Summary Bar with actions ---- */}
+            {/* ---- Summary Bar ---- */}
             <div className="flex items-center gap-3 flex-wrap">
               <BarChart3 className="text-muted-foreground size-4" />
               <span className="text-sm">
-                {t('review.summary', { total: results.length })}
+                {t('review.summary', { total: progress.totalFiles })}
               </span>
-              {successfulCount > 0 && (
-                <Badge variant="secondary">
-                  {t('review.succeeded', { count: successfulCount })}
-                </Badge>
-              )}
-              {failedCount > 0 && (
-                <Badge variant="destructive">
-                  {t('review.failed', { count: failedCount })}
-                </Badge>
-              )}
-              {hasMerged && (
-                <Badge variant="secondary" className="gap-1">
-                  <GitMerge className="size-3" />
-                  {t('review.mergeGroups', { groups: mergeReport!.groups.length, records: mergeReport!.mergedCount })}
-                </Badge>
-              )}
-
-              {hasMerged && (
-                <div className="flex items-center gap-1.5 text-xs">
-                  <span className="text-muted-foreground">{t('review.mergeStrategy')}:</span>
-                  {([
-                    { value: 'first_wins' as const, label: t('review.mergeFirstWins') },
-                    { value: 'latest_wins' as const, label: t('review.mergeLatestWins') },
-                    { value: 'longest_wins' as const, label: t('review.mergeLongestWins') },
-                  ]).map((opt) => (
-                    <Button
-                      key={opt.value}
-                      variant={mergeStrategy === opt.value ? 'default' : 'outline'}
-                      size="sm"
-                      className="h-6 text-xs px-2"
-                      onClick={() => setMergeStrategy(opt.value)}
-                    >
-                      {opt.label}
-                    </Button>
-                  ))}
-                </div>
-              )}
+              <Badge variant="secondary">
+                {t('review.succeeded', { count: pipelineRows.length })}
+              </Badge>
 
               <div className="flex-1" />
-
-              {/* Manual merge button */}
-              {selectedRows.size >= 2 && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleManualMerge}
-                  className="gap-1"
-                >
-                  <GitMerge className="size-3.5" />
-                  {t('review.mergeSelected', { count: selectedRows.size })}
-                </Button>
-              )}
-
-              {/* Toggle detail cards */}
               <Button
                 variant="ghost"
                 size="sm"
@@ -692,128 +630,87 @@ export default function ReviewPanel() {
               </Button>
             </div>
 
-            {/* ---- Main data table + Image viewer ---- */}
-            {finalDisplayRows.length > 0 && mergedHeaders.length > 0 && (
+            {/* ---- Main data table ---- */}
+            {pipelineRows.length > 0 && mergedHeaders.length > 0 && (
               <div className="flex flex-col gap-2">
-                <div
-                  className={`gap-4 ''
-                  }`}
-                >
-                  {/* Data table */}
-                  <div
-                    className={`max-h-[60vh] overflow-auto rounded-md border ${
-                      resultsWithImages.length > 0 ? '' : ''
-                    }`}
-                  >
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="w-8">
-                            <CheckSquare className="size-3.5 text-muted-foreground" />
-                          </TableHead>
-                          <TableHead className="w-36">{t('review.fileName')}</TableHead>
-                          {mergedHeaders.map((h) => (
-                            <TableHead key={h}>
-                              <div className="flex items-center gap-1">
-                                <span>{h}</span>
-                              </div>
-                            </TableHead>
-                          ))}
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {finalDisplayRows.map((row) => {
-                          const isRowSelected = row.id === selectedFileId;
-                          const isChecked = selectedRows.has(row.id);
-                          return (
-                            <TableRow
-                              key={row.id}
-                              className={
-                                isRowSelected
-                                  ? 'bg-primary/5 hover:bg-primary/10'
-                                  : row.isMerged
-                                    ? 'bg-amber-50/50 dark:bg-amber-900/5 hover:bg-muted/50'
-                                    : isChecked
-                                      ? 'bg-blue-50/50 dark:bg-blue-900/10 hover:bg-muted/50'
-                                      : 'hover:bg-muted/50'
-                              }
-                            >
-                              {/* Checkbox */}
-                              <TableCell className="p-2">
-                                <Checkbox
-                                  checked={isChecked}
-                                  onCheckedChange={() => toggleRowSelection(row.id)}
-                                />
-                              </TableCell>
-
-                              {/* File name / label */}
-                              <TableCell
-                                className={`font-medium cursor-pointer ${
-                                  row.imageDataUrl ? 'text-primary hover:underline' : ''
-                                }`}
-                                onClick={() => {
-                                  if (row.imageDataUrl) {
-                                    setSelectedFileId(
-                                      row.id === selectedFileId ? null : row.id
-                                    );
-                                  }
-                                }}
-                              >
-                                <div className="flex items-center gap-1.5">
-                                  {row.imageDataUrl && (
-                                    <ImageIcon className="size-3.5 text-muted-foreground" />
-                                  )}
-                                  {row.isMerged && (
-                                    <GitMerge className="size-3.5 text-amber-500" />
-                                  )}
-                                  <span className="truncate max-w-[120px]">
-                                    {row.label}
-                                  </span>
-                                </div>
-                                {row.isMerged && row.sourceFiles.length > 1 && (
-                                  <div className="text-[10px] text-muted-foreground mt-0.5 max-w-[140px] truncate">
-                                    {row.sourceFiles.join(', ')}
-                                  </div>
+                <div className="max-h-[60vh] overflow-auto rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-36">{t('review.fileName')}</TableHead>
+                        {mergedHeaders.map((h) => (
+                          <TableHead key={h}>{h}</TableHead>
+                        ))}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pipelineRows.map((row) => {
+                        return (
+                          <TableRow
+                            key={row.id}
+                            className={
+                              row.isMerged
+                                ? 'bg-amber-50/50 dark:bg-amber-900/5 hover:bg-muted/50'
+                                : 'hover:bg-muted/50'
+                            }
+                          >
+                            <TableCell className="font-medium">
+                              <div className="flex items-center gap-1.5">
+                                {row.isMerged && (
+                                  <GitMerge className="size-3.5 text-amber-500" />
                                 )}
-                              </TableCell>
+                                <span className="truncate max-w-[120px]">
+                                  {row.label}
+                                </span>
+                              </div>
+                              {row.isMerged && row.sourceFiles.length > 1 && (
+                                <div className="text-[10px] text-muted-foreground mt-0.5 max-w-[140px] truncate">
+                                  {row.sourceFiles.join(', ')}
+                                </div>
+                              )}
+                            </TableCell>
 
-                              {/* Data cells */}
-                              {mergedHeaders.map((h) => {
-                                const value = row.data[h];
-                                const isInconsistent = row.fieldConsistency?.[h] === false;
-                                return (
-                                  <TableCell
-                                    key={h}
-                                    className={isInconsistent ? 'bg-amber-100 dark:bg-amber-900/20' : ''}
-                                  >
-                                    <div className="flex items-center gap-1">
-                                      <span className="max-w-[150px] truncate">
-                                        {renderFieldValue(value)}
-                                      </span>
-                                    </div>
-                                  </TableCell>
-                                );
-                              })}
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </div>
-
+                            {mergedHeaders.map((h) => {
+                              const value = row.data[h];
+                              const isInconsistent = row.fieldConsistency?.[h] === false;
+                              return (
+                                <TableCell
+                                  key={h}
+                                  className={isInconsistent ? 'bg-amber-100 dark:bg-amber-900/20' : ''}
+                                >
+                                  <div className="flex items-center gap-1">
+                                    <span className="max-w-[150px] truncate">
+                                      {renderFieldValue(value)}
+                                    </span>
+                                  </div>
+                                </TableCell>
+                              );
+                            })}
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
                 </div>
               </div>
             )}
 
-            {/* ---- Individual result cards (collapsible) ---- */}
+            {/* ---- No results ---- */}
+            {hasExtracted && pipelineRows.length === 0 && (
+              <p className="text-muted-foreground text-sm text-center py-8">
+                {t('review.noResults')}
+              </p>
+            )}
+
+            {/* ---- Individual result cards ---- */}
             {showDetails && (
               <div className="flex flex-col gap-3">
                 <Separator />
                 <h4 className="text-sm font-medium text-muted-foreground">
                   {t('review.fileDetails')}
                 </h4>
-                {results.map((result, idx) => (
-                  <ResultCard key={`${result.fileId}-${idx}`} result={result} />
+                {pipelineRows.map((row) => (
+                  <PipelineResultCard key={row.id} row={row} headers={mergedHeaders} />
                 ))}
               </div>
             )}
@@ -825,54 +722,21 @@ export default function ReviewPanel() {
 }
 
 // ---------------------------------------------------------------------------
-// Single result card (collapsible)
+// Pipeline result card (collapsible)
 // ---------------------------------------------------------------------------
 
-interface ResultCardProps {
-  result: {
-    fileId: string;
-    fileName: string;
-    success: boolean;
-    data?: Record<string, unknown>;
-    rawResponse?: string;
-    error?: string;
-  };
+interface PipelineResultCardProps {
+  row: PipelineRow;
+  headers: string[];
 }
 
-function ResultCard({ result }: ResultCardProps) {
+function PipelineResultCard({ row, headers }: PipelineResultCardProps) {
   const t = useT();
   const [open, setOpen] = useState(true);
 
-  if (!result.success) {
-    return (
-      <Card className="border-destructive/30 bg-destructive/5">
-        <Collapsible open={open} onOpenChange={setOpen}>
-          <CollapsibleTrigger className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium">
-            {open ? (
-              <ChevronDown className="size-4" />
-            ) : (
-              <ChevronRight className="size-4" />
-            )}
-            <XCircle className="text-destructive size-4" />
-            {result.fileName}
-            <Badge variant="destructive" className="ml-auto">{t('review.failedBadge')}</Badge>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="px-4 pb-3 text-sm text-destructive">
-              {result.error || t('review.noErrorDetail')}
-            </div>
-            {result.rawResponse && (
-              <div className="px-4 pb-3">
-                <RawResponseBlock raw={result.rawResponse} />
-              </div>
-            )}
-          </CollapsibleContent>
-        </Collapsible>
-      </Card>
-    );
-  }
-
-  const entries = result.data ? Object.entries(result.data) : [];
+  const entries = headers
+    .filter((h) => row.data[h] != null)
+    .map((h) => [h, row.data[h]] as [string, unknown]);
 
   return (
     <Card>
@@ -884,15 +748,28 @@ function ResultCard({ result }: ResultCardProps) {
             <ChevronRight className="size-4" />
           )}
           <CheckCircle2 className="text-emerald-600 size-4" />
-          {result.fileName}
-          <Badge variant="secondary" className="ml-auto">
-            {t('review.fieldsCount', { count: entries.length })}
-          </Badge>
+          {row.label}
+          {row.isMerged && (
+            <Badge variant="secondary" className="ml-auto gap-1">
+              <GitMerge className="size-3" />
+              {row.mergeMethod || t('review.mergedRecords')}
+            </Badge>
+          )}
+          {!row.isMerged && (
+            <Badge variant="secondary" className="ml-auto">
+              {t('review.fieldsCount', { count: entries.length })}
+            </Badge>
+          )}
         </CollapsibleTrigger>
         <CollapsibleContent>
           <CardContent className="pt-0">
             <div className="flex flex-col gap-4">
-              {/* Extracted data table */}
+              {row.isMerged && row.sourceFiles.length > 0 && (
+                <div className="text-xs text-muted-foreground">
+                  {row.sourceFiles.join(', ')}
+                </div>
+              )}
+
               {entries.length > 0 ? (
                 <Table>
                   <TableHeader>
@@ -902,14 +779,19 @@ function ResultCard({ result }: ResultCardProps) {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {entries.map(([key, value]) => (
-                      <TableRow key={key}>
-                        <TableCell className="font-medium">{key}</TableCell>
-                        <TableCell>
-                          {value != null ? String(value) : '—'}
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {entries.map(([key, value]) => {
+                      const isInconsistent = row.fieldConsistency?.[key] === false;
+                      return (
+                        <TableRow key={key}>
+                          <TableCell className={`font-medium ${isInconsistent ? 'bg-amber-100 dark:bg-amber-900/20' : ''}`}>
+                            {key}
+                          </TableCell>
+                          <TableCell className={isInconsistent ? 'bg-amber-100 dark:bg-amber-900/20' : ''}>
+                            {renderFieldValue(value)}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               ) : (
@@ -917,42 +799,10 @@ function ResultCard({ result }: ResultCardProps) {
                   {t('review.noData')}
                 </p>
               )}
-
-              {/* Raw response collapsible */}
-              {result.rawResponse && (
-                <RawResponseBlock raw={result.rawResponse} />
-              )}
             </div>
           </CardContent>
         </CollapsibleContent>
       </Collapsible>
     </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Raw response display (collapsible)
-// ---------------------------------------------------------------------------
-
-function RawResponseBlock({ raw }: { raw: string }) {
-  const t = useT();
-  const [open, setOpen] = useState(false);
-
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs transition-colors">
-        {open ? (
-          <ChevronDown className="size-3" />
-        ) : (
-          <ChevronRight className="size-3" />
-        )}
-        {t('review.rawResponse')}
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <pre className="bg-muted mt-1 max-h-48 overflow-y-auto rounded-md p-3 text-xs leading-relaxed">
-          {raw}
-        </pre>
-      </CollapsibleContent>
-    </Collapsible>
   );
 }

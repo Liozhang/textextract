@@ -7,7 +7,7 @@ import { detectLocale, type Locale } from './i18n';
 // Types
 // ---------------------------------------------------------------------------
 
-export type WizardStep = 'upload' | 'template' | 'review' | 'export';
+export type WizardStep = 'upload' | 'review' | 'export';
 
 export interface AppFile {
   id: string;
@@ -18,25 +18,6 @@ export interface AppFile {
   dataUrl?: string;
   status: 'pending' | 'parsed' | 'error';
   error?: string;
-}
-
-export interface TemplateField {
-  name: string;
-  type: 'string' | 'number' | 'boolean' | 'array' | 'date' | 'measurement';
-  required: boolean;
-  description?: string;
-}
-
-export interface ExtractionTemplate {
-  prompt: string;
-  fields: TemplateField[];
-}
-
-export interface FieldRegion {
-  x: number;       // normalized 0-100, percentage of image width
-  y: number;       // normalized 0-100, percentage of image height
-  width: number;   // normalized 0-100
-  height: number;  // normalized 0-100
 }
 
 export interface MergedExportRow {
@@ -51,12 +32,7 @@ export interface ExtractionResultItem {
   fileName: string;
   success: boolean;
   data?: Record<string, unknown>;
-  rawResponse?: string;
   error?: string;
-  /** Field name → bounding box on the original image (normalized 0-100) */
-  regions?: Record<string, FieldRegion>;
-  /** Original image data URL (only for image files) */
-  imageDataUrl?: string;
 }
 
 export type ExtractionStatus = 'idle' | 'extracting' | 'done' | 'error';
@@ -79,7 +55,7 @@ export interface ExportSettings {
 // ---------------------------------------------------------------------------
 
 export interface AppState {
-  // Hydration guard – prevents SSR / hydration mismatch
+  // Hydration guard - prevents SSR / hydration mismatch
   mounted: boolean;
   setMounted: (value: boolean) => void;
 
@@ -97,13 +73,6 @@ export interface AppState {
   removeFile: (id: string) => void;
   updateFile: (id: string, partial: Partial<AppFile>) => void;
   clearFiles: () => void;
-
-  // Extraction template
-  template: ExtractionTemplate;
-  setTemplate: (template: Partial<ExtractionTemplate>) => void;
-  addTemplateField: (field: TemplateField) => void;
-  removeTemplateField: (name: string) => void;
-  updateTemplateField: (name: string, partial: Partial<TemplateField>) => void;
 
   // Extraction results
   results: ExtractionResultItem[];
@@ -124,7 +93,7 @@ export interface AppState {
   exportSettings: ExportSettings;
   setExportSettings: (settings: Partial<ExportSettings>) => void;
 
-  // Merged export data (synced from review panel after auto/manual merge)
+  // Merged export data (synced from review panel after backend pipeline)
   mergedExportData: MergedExportRow[];
   setMergedExportData: (rows: MergedExportRow[]) => void;
 
@@ -135,11 +104,6 @@ export interface AppState {
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
-
-const DEFAULT_TEMPLATE: ExtractionTemplate = {
-  prompt: '',
-  fields: [],
-};
 
 const DEFAULT_PROGRESS: ExtractionProgress = {
   totalFiles: 0,
@@ -189,36 +153,6 @@ export const useStore = create<AppState>()(
         })),
       clearFiles: () => set({ files: [] }),
 
-      // --- Template ---
-      template: { ...DEFAULT_TEMPLATE },
-      setTemplate: (partial) =>
-        set((state) => ({
-          template: { ...state.template, ...partial },
-        })),
-      addTemplateField: (field) =>
-        set((state) => ({
-          template: {
-            ...state.template,
-            fields: [...state.template.fields, field],
-          },
-        })),
-      removeTemplateField: (name) =>
-        set((state) => ({
-          template: {
-            ...state.template,
-            fields: state.template.fields.filter((f) => f.name !== name),
-          },
-        })),
-      updateTemplateField: (name, partial) =>
-        set((state) => ({
-          template: {
-            ...state.template,
-            fields: state.template.fields.map((f) =>
-              f.name === name ? { ...f, ...partial } : f,
-            ),
-          },
-        })),
-
       // --- Results ---
       results: [],
       addResult: (result) =>
@@ -257,7 +191,6 @@ export const useStore = create<AppState>()(
         set({
           step: 'upload',
           files: [],
-          template: { ...DEFAULT_TEMPLATE },
           results: [],
           progress: { ...DEFAULT_PROGRESS },
           exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
@@ -279,21 +212,29 @@ export const useStore = create<AppState>()(
         }
         return localStorage;
       }),
-      // Only persist these slices – wizard step and progress are transient
+      // Only persist these slices - wizard step and progress are transient
       // SECURITY: apiKey is excluded from persistence to avoid plaintext storage in localStorage
       partialize: (state) => ({
-        template: state.template,
         exportSettings: state.exportSettings,
         locale: state.locale,
       }),
       // Skip hydration on server; the `mounted` flag is used client-side
       skipHydration: true,
+      // Version migration: clean up old template data from version 0
+      version: 1,
+      migrate: (persisted, version) => {
+        if (version === 0) {
+          const p = persisted as any;
+          delete p.template;
+        }
+        return persisted as any;
+      },
     },
   ),
 );
 
 /**
- * Helper hook – returns `null` until the zustand store has been hydrated
+ * Helper hook - returns `null` until the zustand store has been hydrated
  * from localStorage.  Use this in components to prevent hydration
  * mismatch flashes.
  */
