@@ -5,7 +5,7 @@ import {
   buildMergeUserMessage,
 } from './prompts';
 import { parseJsonResponse } from './json-parser';
-import { isReasoningModel } from '@/lib/merge-utils';
+import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils';
 
 /**
  * Filter suspicious keys from AI merge output.
@@ -58,8 +58,11 @@ export async function mergeGroupWithAI(
     ],
     temperature: 0.1,
     stream: false,
-    response_format: { type: 'json_object' },
   };
+
+  if (supportsJsonResponseFormat(model)) {
+    requestOptions.response_format = { type: 'json_object' };
+  }
 
   if (isReasoningModel(model)) {
     requestOptions.reasoning_effort = 'low';

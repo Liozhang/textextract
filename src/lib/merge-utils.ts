@@ -11,7 +11,15 @@ export type MergeStrategy = 'first_wins' | 'latest_wins' | 'longest_wins';
 /** Check if a model name indicates a reasoning model (requires reasoning_effort param) */
 export function isReasoningModel(model: string): boolean {
   const lower = model.toLowerCase()
-  return /^(o[1-9]|o4-|step-|deepseek-r|claude)/.test(lower)
+  return /^(o[1-9]|o4-|deepseek-r|claude)/.test(lower)
+}
+
+/** Check if a model supports `response_format: { type: 'json_object' }` */
+export function supportsJsonResponseFormat(model: string): boolean {
+  const lower = model.toLowerCase()
+  // OpenAI o-series does not support response_format json_object
+  if (/^o[1-9]/.test(lower) || /^o4-/.test(lower)) return false
+  return true
 }
 
 // ---------------------------------------------------------------------------
@@ -22,12 +30,18 @@ export function isReasoningModel(model: string): boolean {
  * Merge multiple data records using a strategy.
  * Used as fallback when AI merge fails.
  */
+export interface StrategyMergeResult {
+  data: Record<string, unknown>;
+  conflicts: Array<{ fieldName: string; values: string[] }>;
+}
+
 export function strategyMerge(
-  results: Array<{ data: Record<string, unknown> }>,
+  results: Array<{ data: Record<string, unknown>; fileName?: string }>,
   strategy: MergeStrategy = 'first_wins',
-): { data: Record<string, unknown> } {
-  if (results.length === 0) return { data: {} };
+): StrategyMergeResult {
+  if (results.length === 0) return { data: {}, conflicts: [] };
   const mergedData: Record<string, unknown> = { ...results[0].data };
+  const conflicts: Array<{ fieldName: string; values: string[] }> = [];
 
   for (let i = 1; i < results.length; i++) {
     const r = results[i];
@@ -35,6 +49,21 @@ export function strategyMerge(
       for (const [key, val] of Object.entries(r.data)) {
         const v = val != null ? String(val).trim() : '';
         const current = mergedData[key] != null ? String(mergedData[key]).trim() : '';
+        // Detect conflicts: non-empty and different values
+        if (v && current && v !== current) {
+          const existing = conflicts.find((c) => c.fieldName === key);
+          if (existing) {
+            existing.values.push(`${r.fileName || `文件${i + 1}`}: ${v}`);
+          } else {
+            conflicts.push({
+              fieldName: key,
+              values: [
+                `${results[0].fileName || '文件1'}: ${current}`,
+                `${r.fileName || `文件${i + 1}`}: ${v}`,
+              ],
+            });
+          }
+        }
         const shouldOverwrite =
           strategy === 'latest_wins' ? v !== '' :
           strategy === 'longest_wins' ? v.length > current.length :
@@ -46,7 +75,7 @@ export function strategyMerge(
     }
   }
 
-  return { data: mergedData };
+  return { data: mergedData, conflicts };
 }
 
 /**

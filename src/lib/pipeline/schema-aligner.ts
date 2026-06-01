@@ -5,7 +5,7 @@ import {
   buildSchemaAlignUserMessage,
 } from './prompts';
 import { parseJsonResponse } from './json-parser';
-import { isReasoningModel } from '@/lib/merge-utils';
+import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils';
 import { collectFieldPaths } from './schema-flattener';
 
 // ---------------------------------------------------------------------------
@@ -38,8 +38,8 @@ const FIELD_SYNONYMS: Record<string, string> = {
   '地址': '住址',
   'address': '住址',
   '住院号': '住院号',
-  '病案号': '住院号',
-  '病历号': '住院号',
+  '病案号': '病案号',
+  '病历号': '病案号',
   '住院编号': '住院号',
   '门诊号': '门诊号',
   '就诊号': '门诊号',
@@ -98,6 +98,16 @@ const MODULE_ORDER = [
 const MAX_CACHE_SIZE = 100;
 const schemaCache = new Map<string, FlattenedSchema>();
 
+function cacheGet(key: string): FlattenedSchema | undefined {
+  const cached = schemaCache.get(key);
+  if (cached !== undefined) {
+    // LRU: delete + re-insert to move to most-recent position
+    schemaCache.delete(key);
+    schemaCache.set(key, cached);
+  }
+  return cached;
+}
+
 function cacheSet(key: string, schema: FlattenedSchema): void {
   if (schemaCache.size >= MAX_CACHE_SIZE) {
     const firstKey = schemaCache.keys().next().value;
@@ -107,13 +117,18 @@ function cacheSet(key: string, schema: FlattenedSchema): void {
 }
 
 function simpleHash(str: string): string {
-  let hash = 0;
+  // FNV-1a 32-bit hash — far lower collision rate than djb2 for CJK strings
+  let h1 = 0x811c9dc5 >>> 0;
   for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0;
+    h1 ^= str.charCodeAt(i);
+    h1 = Math.imul(h1, 0x01000193) >>> 0;
   }
-  return hash.toString(36);
+  // Second layer for extra discrimination
+  let h2 = 0;
+  for (let i = 0; i < str.length; i++) {
+    h2 = ((h2 << 5) - h2 + str.charCodeAt(i)) | 0;
+  }
+  return h1.toString(36) + '-' + h2.toString(36);
 }
 
 function buildFieldPathSetKey(paths: FieldPathInfo[], systemPrompt?: string): string {
@@ -137,13 +152,14 @@ export async function alignSchemaWithAI(
   fieldPaths: FieldPathInfo[],
   abortSignal: AbortSignal,
   customSystemPrompt?: string,
+  timeoutMs?: number,
 ): Promise<FlattenedSchema> {
   if (fieldPaths.length === 0) return emptySchema();
 
   // Check cache (key includes effective prompt so custom prompts don't hit stale cache)
   const effectivePrompt = customSystemPrompt || SCHEMA_ALIGN_SYSTEM_MESSAGE;
   const cacheKey = buildFieldPathSetKey(fieldPaths, effectivePrompt);
-  const cached = schemaCache.get(cacheKey);
+  const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
   // Build AI request
@@ -156,8 +172,11 @@ export async function alignSchemaWithAI(
     ],
     temperature: 0.1,
     stream: false,
-    response_format: { type: 'json_object' },
   };
+
+  if (supportsJsonResponseFormat(model)) {
+    requestOptions.response_format = { type: 'json_object' };
+  }
 
   if (isReasoningModel(model)) {
     requestOptions.reasoning_effort = 'low';
@@ -165,7 +184,7 @@ export async function alignSchemaWithAI(
 
   const completion = await openai.chat.completions.create(
     requestOptions as any,
-    { signal: AbortSignal.any([abortSignal, AbortSignal.timeout(30_000)]) },
+    { signal: AbortSignal.any([abortSignal, AbortSignal.timeout(timeoutMs ?? 120_000)]) },
   );
 
   const msg = completion.choices?.[0]?.message;
