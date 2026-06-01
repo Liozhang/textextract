@@ -18,6 +18,8 @@ import { strategyMerge, isReasoningModel } from '@/lib/merge-utils'
 import { normalizeAllResults } from '@/lib/pipeline/post-normalizer'
 import type { PerFileResult, AlignedPerFileResult, MergedRecord } from '@/lib/pipeline/types'
 
+type OpenAIError = Error & { status?: number }
+
 // ─── Security: URL validation ────────────────────────────────────────────
 
 const PRIVATE_HOSTS = [
@@ -178,7 +180,29 @@ async function workerPool<T>(
   await Promise.all(workers)
 }
 
-// ─── Date/measurement normalization ──────────────────────────────────────────
+// ─── Flat validation ──────────────────────────────────────────────────────────
+
+function isFlat(data: Record<string, unknown>): boolean {
+  for (const val of Object.values(data)) {
+    if (val !== null && typeof val === 'object') return false
+  }
+  return true
+}
+
+const FLATTEN_RETRY_SYSTEM = `你上一次的输出包含了嵌套对象或数组，这不符合要求。请严格按以下规则重新输出：
+
+1. 所有信息必须在 JSON 的第一层级，绝对禁止嵌套对象 {} 和数组 []
+2. 所有值只能是字符串、数字或布尔类型
+3. 逻辑分类通过键名中的连字符 "-" 体现（如 "血常规-白细胞 (WBC)"）
+4. 多个同类项用英文分号 ";" 拼接为一个字符串
+5. 定量指标保留数值和单位在一个字符串中（如 "5.0 ×10⁹/L"）
+6. 仅输出纯 JSON，不要任何解释性文本或代码块标记`
+
+function buildFlattenRetryUserMessage(data: Record<string, unknown>): string {
+  return `你上次输出的以下数据包含嵌套对象或数组，请将其完全展平后重新输出：\n\n${JSON.stringify(data)}`
+}
+
+// ─── Date normalization ─────────────────────────────────────────────────────
 
 function normalizeDate(value: unknown): string {
   const s = String(value ?? '').trim()
@@ -194,28 +218,13 @@ function normalizeDate(value: unknown): string {
   return s
 }
 
-function normalizeMeasurement(value: unknown): unknown {
-  if (value && typeof value === 'object' && 'value' in value && 'unit' in value) return value
-  const s = String(value ?? '').trim()
-  if (!s) return s
-  const match = s.match(/^([\d.]+)\s*(.+)$/)
-  if (match) {
-    const num = parseFloat(match[1])
-    if (!isNaN(num)) return { value: num, unit: match[2].trim() }
-  }
-  return s
-}
-
-/** Apply generic normalization to extracted data (no template field types needed) */
+/** Apply date normalization to extracted data. Measurement strings are kept as-is (flat output). */
 function normalizeExtractedData(data: Record<string, unknown>): Record<string, unknown> {
   const normalized: Record<string, unknown> = {}
   for (const [key, val] of Object.entries(data)) {
-    // Try date normalization for any field that looks like a date
     const strVal = typeof val === 'string' ? val.trim() : ''
     if (strVal && (/\d{4}[年/\-]\d{1,2}[月/\-]\d{1,2}/.test(strVal) || /^\d{4}-\d{2}-\d{2}$/.test(strVal))) {
       normalized[key] = normalizeDate(val)
-    } else if (strVal && /^[\d.]+\s+\w+$/.test(strVal)) {
-      normalized[key] = normalizeMeasurement(val)
     } else {
       normalized[key] = val
     }
@@ -277,32 +286,13 @@ export async function POST(request: NextRequest) {
   const abortController = new AbortController()
 
   try {
-    // Security: check request body size (content-length can be missing in chunked encoding)
+    // Security: check request body size via content-length header
     const contentLength = request.headers.get('content-length')
     if (contentLength && parseInt(contentLength, 10) > MAX_REQUEST_SIZE) {
       return new Response(JSON.stringify({ error: '请求体过大，最大允许 100MB' }), {
         status: 413,
         headers: { 'Content-Type': 'application/json' },
       })
-    }
-
-    // Clone body stream and measure actual bytes as a safety net
-    const bodyClone = request.clone()
-    let actualSize = 0
-    const reader = bodyClone.body?.getReader()
-    if (reader) {
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        actualSize += value.byteLength
-        if (actualSize > MAX_REQUEST_SIZE) {
-          reader.cancel()
-          return new Response(JSON.stringify({ error: '请求体过大，最大允许 100MB' }), {
-            status: 413,
-            headers: { 'Content-Type': 'application/json' },
-          })
-        }
-      }
     }
 
     const body: ExtractRequestBody = await request.json()
@@ -316,6 +306,19 @@ export async function POST(request: NextRequest) {
     const extractionPrompt = customPrompts?.extraction || EXTRACTION_SYSTEM_MESSAGE
     const schemaAlignPrompt = customPrompts?.schemaAlign || SCHEMA_ALIGN_SYSTEM_MESSAGE
     const mergePrompt = customPrompts?.merge || MERGE_SYSTEM_MESSAGE
+
+    // Compute per-call timeout scaled to total request payload size.
+    // Base: API_TIMEOUT env (default 120s) + 15s per MB of total body (covers
+    // image base64 + JSON overhead). Conservative: over-estimates per-file need.
+    // Fallback: if content-length is absent (chunked encoding), estimate from
+    // parsed file data to avoid silent degradation to base timeout.
+    const baseTimeout = Number(process.env.API_TIMEOUT) || 120_000
+    let bodySizeMB = contentLength ? parseInt(contentLength, 10) / (1024 * 1024) : 0
+    if (bodySizeMB === 0 && files.length > 0) {
+      const estimatedBytes = files.reduce((sum, f) => sum + (f.dataUrl?.length || 0) + (f.content?.length || 0), 0)
+      bodySizeMB = estimatedBytes / (1024 * 1024)
+    }
+    const perCallTimeout = Math.min(600_000, baseTimeout + Math.ceil(bodySizeMB * 15_000))
 
     // All model settings from .env (trim to avoid whitespace issues)
     const apiSettings: ApiSettings = {
@@ -440,7 +443,7 @@ export async function POST(request: NextRequest) {
                 // Each retry uses a fresh messages array (no conversation context)
                 const completion = await openai.chat.completions.create(
                   { ...requestOptions, messages: baseMessages } as any,
-                  { signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(120_000)]) },
+                  { signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]) },
                 )
 
                 let fullContent = ''
@@ -459,7 +462,38 @@ export async function POST(request: NextRequest) {
                 const data = (extracted && typeof extracted === 'object' && !Array.isArray(extracted))
                   ? extracted as Record<string, unknown>
                   : { result: extracted }
-                const normalizedData = normalizeExtractedData(data)
+
+                // Validate flat structure — retry with flatten prompt if nested
+                let finalData = data
+                if (!isFlat(data)) {
+                  const flatMessages: OpenAI.ChatCompletionMessageParam[] = [
+                    ...baseMessages,
+                    { role: 'assistant', content: fullContent },
+                    { role: 'system', content: FLATTEN_RETRY_SYSTEM },
+                    { role: 'user', content: buildFlattenRetryUserMessage(data) },
+                  ]
+                  const flatCompletion = await openai.chat.completions.create(
+                    { ...requestOptions, messages: flatMessages } as any,
+                    { signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]) },
+                  )
+                  let flatContent = ''
+                  if (Symbol.asyncIterator in Object(flatCompletion)) {
+                    for await (const chunk of flatCompletion as unknown as AsyncIterable<OpenAI.ChatCompletionChunk>) {
+                      const delta = chunk.choices?.[0]?.delta?.content
+                      if (delta) flatContent += delta
+                    }
+                  } else {
+                    const msg = (flatCompletion as unknown as OpenAI.ChatCompletion).choices?.[0]?.message
+                    flatContent = msg?.content || ''
+                  }
+                  const flatParsed = parseJsonResponse(flatContent)
+                  if (flatParsed && typeof flatParsed === 'object' && !Array.isArray(flatParsed) && isFlat(flatParsed as Record<string, unknown>)) {
+                    finalData = flatParsed as Record<string, unknown>
+                  }
+                  // If flatten retry also fails, proceed with original data (Phase 2 will handle it)
+                }
+
+                const normalizedData = normalizeExtractedData(finalData)
 
                 let imageDataUrl: string | undefined
                 if (file.dataUrl && /^data:image\//.test(file.dataUrl)) {
@@ -487,7 +521,18 @@ export async function POST(request: NextRequest) {
                 lastError = '' // clear on success
                 break
               } catch (err) {
-                lastError = err instanceof Error ? err.message : '未知错误'
+                if (err instanceof Error) {
+                  const apiErr = err as OpenAIError
+                  if (apiErr.status) {
+                    lastError = `API ${apiErr.status}: ${err.message}`
+                  } else if (err.name === 'AbortError' || err.name === 'TimeoutError') {
+                    lastError = `请求超时 (${Math.round(perCallTimeout / 1000)}s)`
+                  } else {
+                    lastError = err.message
+                  }
+                } else {
+                  lastError = '未知错误'
+                }
               }
             }
 

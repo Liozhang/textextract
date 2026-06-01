@@ -229,12 +229,75 @@ function protectStructuredArray(key: string, value: unknown[]): unknown[] | unde
 /**
  * Apply post-extraction normalization to a PerFileResult's data.
  * Mutates the data object in place and returns it.
+ * Detects flat vs nested structure and dispatches accordingly.
  */
 export function normalizePostExtraction(result: PerFileResult): PerFileResult {
   if (!result.success || !result.data) return result;
 
-  result.data = normalizeDataObject(result.data);
+  result.data = isDataFlat(result.data) ? normalizeFlatData(result.data) : normalizeDataObject(result.data);
   return result;
+}
+
+/**
+ * Check if extracted data is completely flat (no nested objects or arrays).
+ */
+function isDataFlat(data: Record<string, unknown>): boolean {
+  for (const val of Object.values(data)) {
+    if (val !== null && typeof val === 'object') return false;
+  }
+  return true;
+}
+
+/**
+ * Normalize a flat data object (all values are primitives).
+ * Handles flat keys like "血常规-白细胞 (WBC)" or "诊断-出院诊断".
+ */
+function normalizeFlatData(obj: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+
+  for (const [key, val] of Object.entries(obj)) {
+    const normalizedKey = normalizeFlatKey(key);
+
+    // Normalize primitive values (age, dates)
+    result[normalizedKey] = normalizePrimitiveValue(normalizedKey, val);
+  }
+
+  return result;
+}
+
+/**
+ * Normalize a flat key (e.g. "血常规-白细胞 (WBC)" or "诊断-出院诊断" or "患者姓名").
+ * 1. Extract module prefix (before first `-`) and normalize via PATH_PREFIX_MAP
+ * 2. Extract indicator name (after first `-`) and normalize via TUMOR_MARKER_MAP / KEY_ALIASES
+ * 3. Preserve `诊断-` and `病理描述-` prefixes as-is (only normalize the sub-key)
+ */
+function normalizeFlatKey(key: string): string {
+  const dashIdx = key.indexOf('-');
+  if (dashIdx === -1) {
+    return KEY_ALIASES[key] || key;
+  }
+
+  const prefix = key.substring(0, dashIdx);
+  const subKey = key.substring(dashIdx + 1);
+
+  // Preserve special prefixes — only normalize sub-key via alias
+  if (prefix === '诊断' || prefix === '病理描述') {
+    return `${prefix}-${KEY_ALIASES[subKey] || subKey}`;
+  }
+
+  // Normalize module prefix
+  const normalizedPrefix = PATH_PREFIX_MAP[prefix] || prefix;
+
+  // Normalize indicator name: strip parenthetical, check maps, re-append if changed
+  const parenMatch = subKey.match(/^(.+?)\s*\(([^)]+)\)\s*$/);
+  const baseName = parenMatch ? parenMatch[1].trim() : subKey;
+  const abbr = parenMatch ? parenMatch[2] : null;
+  const mappedBase = TUMOR_MARKER_MAP[baseName] || KEY_ALIASES[baseName];
+  const normalizedSub = mappedBase
+    ? (abbr ? `${mappedBase} (${abbr})` : mappedBase)
+    : subKey;
+
+  return `${normalizedPrefix}-${normalizedSub}`;
 }
 
 /**
