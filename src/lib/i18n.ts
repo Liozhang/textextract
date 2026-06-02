@@ -33,6 +33,7 @@ const en = {
     extract: 'Extract',
     merge_keys: 'Normalize',
     template: 'Template',
+    align_merge: 'Align & Merge',
     export: 'Export',
   },
   template: {
@@ -267,6 +268,7 @@ const zh: {
     extract: '\u5185\u5BB9\u63D0\u53D6',
     merge_keys: '\u952E\u540D\u5F52\u4E00\u5316',
     template: '\u6A21\u677F\u5236\u4F5C',
+    align_merge: '\u5BF9\u9F50\u5408\u5E76',
     export: '\u5BFC\u51FA\u7ED3\u679C',
   },
   template: {

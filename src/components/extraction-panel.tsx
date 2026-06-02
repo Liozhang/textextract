@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Play,
   RotateCcw,
@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
+import { useExtractionSummary } from '@/lib/hooks/use-extraction-summary';
 import {
   PipelinePhase,
   parseSSEChunks,
@@ -98,28 +99,7 @@ export default function ExtractionPanel() {
   const canStart = files.length > 0;
 
   // Extracted fields from snapshot
-  const extractedFields = useMemo(() => {
-    if (!extractionSnapshot) return [];
-    const fieldSet = new Set<string>();
-    for (const r of extractionSnapshot.results) {
-      if (r.success && r.data) {
-        for (const key of Object.keys(r.data)) {
-          fieldSet.add(key);
-        }
-      }
-    }
-    return Array.from(fieldSet);
-  }, [extractionSnapshot]);
-
-  const extractionSummary = useMemo(() => {
-    if (!extractionSnapshot) return null;
-    const results = extractionSnapshot.results;
-    return {
-      total: results.length,
-      succeeded: results.filter((r) => r.success).length,
-      failed: results.filter((r) => !r.success).length,
-    };
-  }, [extractionSnapshot]);
+  const { extractedFields, extractionSummary } = useExtractionSummary();
 
   // Cleanup
   useEffect(() => {

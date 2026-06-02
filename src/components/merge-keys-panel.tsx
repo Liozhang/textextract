@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
+import { useExtractionSummary } from '@/lib/hooks/use-extraction-summary';
 import {
   Card,
   CardContent,
@@ -94,30 +95,7 @@ export default function MergeKeysPanel() {
   const isAligned = progress.status === 'keys_aligned' && keyAlignmentResult !== null;
 
   // Compute unique keys from extraction snapshot
-  const uniqueKeys = useMemo(() => {
-    if (!extractionSnapshot) return [];
-    const keyCount = new Map<string, number>();
-    for (const r of extractionSnapshot.results) {
-      if (r.success && r.data) {
-        for (const key of Object.keys(r.data)) {
-          keyCount.set(key, (keyCount.get(key) || 0) + 1);
-        }
-      }
-    }
-    return Array.from(keyCount.entries())
-      .map(([key, count]) => ({ key, count }))
-      .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
-  }, [extractionSnapshot]);
-
-  const extractionSummary = useMemo(() => {
-    if (!extractionSnapshot) return null;
-    const results = extractionSnapshot.results;
-    return {
-      total: results.length,
-      succeeded: results.filter((r) => r.success).length,
-      failed: results.filter((r) => !r.success).length,
-    };
-  }, [extractionSnapshot]);
+  const { uniqueKeys, extractionSummary } = useExtractionSummary();
 
   // Toggle key selection
   const toggleKey = useCallback((key: string) => {

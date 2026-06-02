@@ -7,7 +7,7 @@ import { detectLocale, type Locale } from './i18n';
 // Types
 // ---------------------------------------------------------------------------
 
-export type WizardStep = 'upload' | 'extract' | 'merge_keys' | 'template' | 'export';
+export type WizardStep = 'upload' | 'extract' | 'merge_keys' | 'template' | 'align_merge' | 'export';
 
 export interface ColumnConstraint {
   key: string;
@@ -44,7 +44,7 @@ export interface ExtractionResultItem {
   error?: string;
 }
 
-export type ExtractionStatus = 'idle' | 'extracting' | 'extraction_done' | 'keys_aligning' | 'keys_aligned' | 'aligning_merging' | 'done' | 'error';
+export type ExtractionStatus = 'idle' | 'extracting' | 'extraction_done' | 'keys_aligning' | 'keys_aligned' | 'template_done' | 'aligning_merging' | 'done' | 'error';
 
 export interface ExtractionProgress {
   totalFiles: number;

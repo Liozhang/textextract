@@ -8,6 +8,7 @@ import FileUploadPanel from '@/components/file-upload-panel';
 import ExtractionPanel from '@/components/extraction-panel';
 import MergeKeysPanel from '@/components/merge-keys-panel';
 import TemplateStepPanel from '@/components/template-step-panel';
+import AlignMergePanel from '@/components/align-merge-panel';
 import ExportPanel from '@/components/export-panel';
 import LanguageSwitcher from '@/components/language-switcher';
 import PromptSettings from '@/components/prompt-settings';
@@ -38,6 +39,7 @@ const STEPS = [
   { key: 'extract', icon: Layers },
   { key: 'merge_keys', icon: GitMerge },
   { key: 'template', icon: LayoutTemplate },
+  { key: 'align_merge', icon: GitMerge },
   { key: 'export', icon: Download },
 ] as const;
 
@@ -76,7 +78,8 @@ export default function Home() {
     if (step === 'upload') return files.length > 0 && progress.status !== 'extracting';
     if (step === 'extract') return progress.status === 'extraction_done' || progress.status === 'keys_aligned';
     if (step === 'merge_keys') return progress.status === 'extraction_done' || progress.status === 'keys_aligned';
-    if (step === 'template') return progress.status === 'done';
+    if (step === 'template') return progress.status === 'template_done' || progress.status === 'done';
+    if (step === 'align_merge') return progress.status === 'done';
     return false;
   };
 
@@ -99,7 +102,8 @@ export default function Home() {
   const isStepCompleted = (stepKey: (typeof STEPS)[number]['key']) => {
     if (stepKey === 'extract') return progress.status === 'extraction_done' || progress.status === 'keys_aligned' || progress.status === 'done';
     if (stepKey === 'merge_keys') return progress.status === 'keys_aligned' || progress.status === 'done';
-    if (stepKey === 'template') return progress.status === 'done';
+    if (stepKey === 'template') return progress.status === 'template_done' || progress.status === 'done';
+    if (stepKey === 'align_merge') return progress.status === 'done';
     // Mark previous steps as completed if we're past them
     const idx = STEPS.findIndex((s) => s.key === stepKey);
     return idx < currentStepIndex;
@@ -183,6 +187,7 @@ export default function Home() {
         {step === 'extract' && <ExtractionPanel />}
         {step === 'merge_keys' && <MergeKeysPanel />}
         {step === 'template' && <TemplateStepPanel />}
+        {step === 'align_merge' && <AlignMergePanel />}
         {step === 'export' && <ExportPanel />}
       </div>
 
