@@ -37,6 +37,7 @@ const PHASES: Array<{ key: keyof PromptSettings; defaultKey: keyof typeof DEFAUL
   { key: 'keyAlign', defaultKey: 'keyAlign' },
   { key: 'merge', defaultKey: 'merge' },
   { key: 'templateAlign', defaultKey: 'templateAlign' },
+  { key: 'templateGenerate', defaultKey: 'templateGenerate' },
 ];
 
 export default function PromptSettings() {
@@ -205,7 +206,7 @@ export default function PromptSettings() {
             <AlertDialogAction
               onClick={() => {
                 resetPromptSettings();
-                setLocalValues({ extraction: '', keyAlign: '', merge: '', templateAlign: '' });
+                setLocalValues({ extraction: '', keyAlign: '', merge: '', templateAlign: '', templateGenerate: '' });
                 setShowResetConfirm(false);
               }}
             >

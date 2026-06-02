@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, Sparkles, LayoutTemplate } from 'lucide-react';
+import { Sparkles, LayoutTemplate } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import { useExtractionSummary } from '@/lib/hooks/use-extraction-summary';
@@ -23,7 +23,7 @@ export default function TemplateStepPanel() {
   const resetTemplate = useStore((s) => s.resetTemplate);
   const setStep = useStore((s) => s.setStep);
 
-  const { extractedFields, extractionSummary } = useExtractionSummary();
+  const { extractedFields } = useExtractionSummary();
   const isExtractionDone = progress.status === 'extraction_done' || progress.status === 'keys_aligned';
 
   const handleConfirm = () => {
@@ -52,21 +52,6 @@ export default function TemplateStepPanel() {
           <p className="text-muted-foreground text-sm">
             {t('review.hintNoFiles')}
           </p>
-        )}
-
-        {/* Extraction summary */}
-        {isExtractionDone && extractionSummary && (
-          <div className="flex items-center gap-2 text-sm">
-            <CheckCircle2 className="text-emerald-600 size-4" />
-            <span className="font-medium">{t('review.extractionComplete')}</span>
-            <span className="text-muted-foreground">
-              {t('review.extractionSummary', {
-                total: extractionSummary.total,
-                succeeded: extractionSummary.succeeded,
-                failed: extractionSummary.failed,
-              })}
-            </span>
-          </div>
         )}
 
         {/* Extracted fields badges */}

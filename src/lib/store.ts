@@ -64,6 +64,7 @@ export interface PromptSettings {
   keyAlign: string;
   merge: string;
   templateAlign: string;
+  templateGenerate: string;
 }
 
 export interface ApiSettings {
@@ -187,6 +188,7 @@ const DEFAULT_PROMPT_SETTINGS: PromptSettings = {
   keyAlign: '',
   merge: '',
   templateAlign: '',
+  templateGenerate: '',
 };
 
 const DEFAULT_API_SETTINGS: ApiSettings = {
@@ -354,7 +356,7 @@ export const useStore = create<AppState>()(
       },
       // Skip hydration on server; the `mounted` flag is used client-side
       skipHydration: true,
-      version: 2,
+      version: 3,
     },
   ),
 );

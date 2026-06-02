@@ -2,19 +2,7 @@ import { NextRequest } from 'next/server'
 import OpenAI from 'openai'
 import { supportsJsonResponseFormat } from '@/lib/merge-utils'
 import { isPrivateHost, resolveApiSettings } from '@/lib/api-utils'
-
-const TEMPLATE_SYSTEM_PROMPT = `你是一个输出模板设计助手。根据用户提供的模板字段描述，为每个字段生成结构化的列定义。
-
-要求：
-1. key 使用用户提供的字段名（保持原样，不要翻译或修改）
-2. type 只能是 string、number 或 boolean（根据字段含义推断）
-3. description 用中文简短描述该字段的含义
-4. example 提供一个合理的示例值
-
-返回 JSON 对象，格式如下：
-{"columns": [{"key": "字段名", "type": "string", "description": "描述", "example": "示例值"}]}
-
-仅返回 JSON 对象，不要任何解释性文本。`
+import { TEMPLATE_GENERATE_SYSTEM_MESSAGE } from '@/lib/pipeline/prompts'
 
 export async function POST(request: NextRequest) {
   try {
@@ -69,7 +57,7 @@ export async function POST(request: NextRequest) {
     const completion = await openai.chat.completions.create({
       model: apiSettings.model,
       messages: [
-        { role: 'system', content: TEMPLATE_SYSTEM_PROMPT },
+        { role: 'system', content: TEMPLATE_GENERATE_SYSTEM_MESSAGE },
         { role: 'user', content: userMessage },
       ],
       temperature: 0.3,

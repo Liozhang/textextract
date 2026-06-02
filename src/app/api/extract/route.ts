@@ -242,7 +242,7 @@ export async function POST(request: NextRequest) {
       baseUrl: resolved.baseUrl,
       apiKey: resolved.apiKey,
       model: resolved.model,
-      temperature: Number(process.env.API_TEMPERATURE) || 0.3,
+      temperature: 0.1,
       concurrency: resolved.concurrency,
     }
 
@@ -398,6 +398,13 @@ export async function POST(request: NextRequest) {
                 let finalData = data
                 if (!isAllowedStructure(data)) {
                   finalData = flattenObject(data)
+                }
+                // Auto-flatten: single top-level key with object value → unwrap
+                if (Object.keys(finalData).length === 1) {
+                  const singleVal = Object.values(finalData)[0]
+                  if (singleVal && typeof singleVal === 'object' && !Array.isArray(singleVal)) {
+                    finalData = flattenObject(finalData)
+                  }
                 }
 
                 let imageDataUrl: string | undefined
