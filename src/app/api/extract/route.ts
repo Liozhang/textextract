@@ -214,7 +214,7 @@ function isFlat(data: Record<string, unknown>): boolean {
   return true
 }
 
-const FLATTEN_RETRY_SYSTEM = `你上一次的输出包含了嵌套对象或数组，这不符合要求。请严格按以下规则重新输出：
+const FLATTEN_RETRY_SYSTEM = `你上一次的输出包含了嵌套对象或数组，这不符合要求。请直接重新输出，不要思考：
 
 1. 所有信息必须在 JSON 的第一层级，绝对禁止嵌套对象 {} 和数组 []
 2. 所有值只能是字符串、数字或布尔类型
