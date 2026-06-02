@@ -18,6 +18,8 @@ import {
   parseSSEChunks,
   consumeSSEStream,
 } from '@/lib/pipeline-helpers';
+import { saveSession, clearSession, loadSession, getInterruptedSessions } from '@/lib/idb-storage';
+import type { SessionData } from '@/lib/idb-storage';
 import {
   Card,
   CardContent,
@@ -127,6 +129,9 @@ export default function ExtractionPanel() {
     setMergedExportData([]);
     resetTemplate();
 
+    // Generate session ID for IndexedDB persistence
+    const sessionId = crypto.randomUUID();
+
     const total = files.length;
     setProgress({
       totalFiles: total,
@@ -173,8 +178,7 @@ export default function ExtractionPanel() {
             name: f.name,
             size: f.size,
             type: f.type,
-            content: f.content,
-            dataUrl: f.dataUrl,
+            sessionId: f.sessionId,
           })),
           prompts: {
             extraction: promptSettings.extraction || undefined,
@@ -319,6 +323,17 @@ export default function ExtractionPanel() {
 
         // If status was set to error, stop all batches
         if (useStore.getState().progress.status === 'error') break;
+
+        // Persist batch progress to IndexedDB (fire-and-forget)
+        saveSession({
+          sessionId,
+          status: 'extracting',
+          results: accumulatedResults,
+          groups: accumulatedGroups,
+          completedBatches: batchIdx + 1,
+          totalBatches: batches.length,
+          createdAt: Date.now(),
+        }).catch(() => {});
       }
 
       // All batches complete — build final snapshot
@@ -346,6 +361,8 @@ export default function ExtractionPanel() {
         });
         setProgress({ status: 'extraction_done' });
         setHasExtracted(true);
+        // Clear IndexedDB session on successful completion
+        clearSession(sessionId).catch(() => {});
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
@@ -358,6 +375,7 @@ export default function ExtractionPanel() {
           setProgress({ status: 'extraction_done', currentFile: '' });
         } else {
           setProgress({ status: 'idle', currentFile: '' });
+          clearSession(sessionId).catch(() => {});
         }
         setPhases((prev) =>
           prev.map((p) => {
@@ -435,8 +453,7 @@ export default function ExtractionPanel() {
         name: f.name,
         size: f.size,
         type: f.type,
-        content: f.content,
-        dataUrl: f.dataUrl,
+        sessionId: f.sessionId,
       })),
       prompts: {
         extraction: useStore.getState().promptSettings.extraction || undefined,

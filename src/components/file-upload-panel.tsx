@@ -10,6 +10,7 @@ import {
   FileType2,
   File,
   Trash2,
+  Loader2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -70,35 +71,27 @@ function getStatusBadge(t: ReturnType<typeof useT>, status: AppFile['status']) {
   }
 }
 
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const base64 = dataUrl.replace(/^data:[^;]+;base64,/, '');
-      resolve(base64);
-    };
-    reader.onerror = () => reject(new Error('File read failed'));
-    reader.readAsDataURL(file);
-  });
-}
-
-function readFileAsText(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error('File read failed'));
-    reader.readAsText(file);
-  });
-}
-
-function readFileAsDataURL(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error('File read failed'));
-    reader.readAsDataURL(file);
-  });
+/** Upload files to server and return sessionId + file metadata */
+async function uploadFilesToServer(rawFiles: File[]): Promise<{
+  sessionId: string;
+  files: Array<{ fileId: string; name: string; size: number; type: string }>;
+} | null> {
+  try {
+    const formData = new FormData();
+    for (const f of rawFiles) {
+      formData.append('files', f);
+    }
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Upload failed' }));
+      toast.error(err.error || 'Upload failed');
+      return null;
+    }
+    return await res.json();
+  } catch {
+    toast.error('Upload failed');
+    return null;
+  }
 }
 
 // ---- component ----
@@ -108,47 +101,20 @@ export default function FileUploadPanel() {
   const files = useStore((s) => s.files);
   const addFiles = useStore((s) => s.addFiles);
   const removeFile = useStore((s) => s.removeFile);
-  const updateFile = useStore((s) => s.updateFile);
   const clearFiles = useStore((s) => s.clearFiles);
   const progress = useStore((s) => s.progress);
 
   const isPipelineActive = progress.status === 'extracting' || progress.status === 'aligning_merging';
 
   const [dragOver, setDragOver] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  // Process each file using FileReader based on type
-  const processFile = useCallback(
-    async (rawFile: File, appFile: AppFile) => {
-      const ext = getFileExtension(rawFile.name);
-
-      try {
-        if (['.txt', '.md', '.csv', '.json'].includes(ext)) {
-          const content = await readFileAsText(rawFile);
-          updateFile(appFile.id, { content, status: 'parsed' });
-        } else if (['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext)) {
-          const dataUrl = await readFileAsDataURL(rawFile);
-          updateFile(appFile.id, { dataUrl, status: 'parsed' });
-        } else {
-          // Binary files: .pdf, .docx, .xlsx etc.
-          const base64 = await readFileAsBase64(rawFile);
-          updateFile(appFile.id, { dataUrl: `data:application/octet-stream;base64,${base64}`, status: 'parsed' });
-        }
-      } catch {
-        updateFile(appFile.id, {
-          status: 'error',
-          error: t('upload.readFailed'),
-        });
-      }
-    },
-    [updateFile, t],
-  );
 
   // Add files from a FileList
   const handleFileList = useCallback(
-    (fileList: FileList | null) => {
+    async (fileList: FileList | null) => {
       if (!fileList || fileList.length === 0) return;
-      if (isPipelineActive) return;
+      if (isPipelineActive || uploading) return;
 
       // Enforce max file count
       const remaining = MAX_FILE_COUNT - files.length;
@@ -157,10 +123,10 @@ export default function FileUploadPanel() {
         return;
       }
 
-      const newAppFiles: AppFile[] = [];
-
+      // Filter and collect valid files
+      const validFiles: File[] = [];
       for (let i = 0; i < fileList.length; i++) {
-        if (newAppFiles.length >= remaining) {
+        if (validFiles.length >= remaining) {
           toast.error(t('upload.maxFilesExceeded', { count: MAX_FILE_COUNT }));
           break;
         }
@@ -171,31 +137,34 @@ export default function FileUploadPanel() {
           toast.error(t('upload.unsupported', { format: ext }));
           continue;
         }
-
-        const id = generateId();
-
         if (rawFile.size > MAX_FILE_SIZE) {
           toast.error(t('upload.tooLarge', { name: rawFile.name }));
           continue;
         }
-
-        const appFile: AppFile = {
-          id,
-          name: rawFile.name,
-          size: rawFile.size,
-          type: rawFile.type || ext,
-          status: 'pending',
-        };
-        newAppFiles.push(appFile);
-        // Fire-and-forget processing
-        processFile(rawFile, appFile);
+        validFiles.push(rawFile);
       }
 
-      if (newAppFiles.length > 0) {
-        addFiles(newAppFiles);
-      }
+      if (validFiles.length === 0) return;
+
+      // Upload to server first
+      setUploading(true);
+      const uploadResult = await uploadFilesToServer(validFiles);
+      setUploading(false);
+
+      if (!uploadResult) return;
+
+      const newAppFiles: AppFile[] = uploadResult.files.map((f) => ({
+        id: f.fileId,
+        name: f.name,
+        size: f.size,
+        type: f.type,
+        status: 'parsed' as const,
+        sessionId: uploadResult.sessionId,
+      }));
+
+      addFiles(newAppFiles);
     },
-    [addFiles, processFile, t, isPipelineActive],
+    [addFiles, t, isPipelineActive, uploading, files.length],
   );
 
   // Drag events
@@ -262,7 +231,7 @@ export default function FileUploadPanel() {
             flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed
             p-10 transition-colors select-none
             ${
-              isPipelineActive
+              isPipelineActive || uploading
                 ? 'border-muted-foreground/10 cursor-not-allowed opacity-50'
                 : dragOver
                   ? 'border-primary bg-primary/5 cursor-pointer'
@@ -270,7 +239,11 @@ export default function FileUploadPanel() {
             }
           `}
         >
-          <Upload className={`size-10 ${dragOver ? 'text-primary' : 'text-muted-foreground'}`} />
+          {uploading ? (
+            <Loader2 className="size-10 text-primary animate-spin" />
+          ) : (
+            <Upload className={`size-10 ${dragOver ? 'text-primary' : 'text-muted-foreground'}`} />
+          )}
           <p className="text-sm text-center text-muted-foreground">
             {t('upload.dropzone')}
           </p>

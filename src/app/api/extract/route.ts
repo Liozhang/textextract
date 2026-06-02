@@ -2,6 +2,9 @@ import { NextRequest } from 'next/server'
 import OpenAI from 'openai'
 import mammoth from 'mammoth'
 import sharp from 'sharp'
+import { readFileSync, existsSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 
 import { parseJsonResponse } from '@/lib/pipeline/json-parser'
 
@@ -51,6 +54,8 @@ interface FileInput {
   type?: string
   content?: string
   dataUrl?: string
+  /** When provided, read file from server temp storage: tmpdir/ocr-extract/{sessionId}/{id} */
+  sessionId?: string
 }
 
 interface ApiSettings {
@@ -84,6 +89,13 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
 
   // Helper: extract base64 from dataUrl (used for binary files uploaded as dataUrl)
   const getBase64 = () => {
+    if (file.sessionId) {
+      // Server temp storage path
+      const filePath = join(tmpdir(), 'ocr-extract', file.sessionId, file.id)
+      if (existsSync(filePath)) {
+        return readFileSync(filePath).toString('base64')
+      }
+    }
     if (file.dataUrl) return file.dataUrl.replace(/^data:[^;]+;base64,/, '')
     if (file.content) return file.content
     return ''

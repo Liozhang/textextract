@@ -23,6 +23,8 @@ export interface AppFile {
   type: string;
   content?: string;
   dataUrl?: string;
+  /** Server session ID — when set, file is read from server temp storage */
+  sessionId?: string;
   status: 'pending' | 'parsed' | 'error';
   error?: string;
 }
