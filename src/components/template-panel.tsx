@@ -27,6 +27,44 @@ interface TemplatePanelProps {
   onSkip?: () => void;
 }
 
+/**
+ * Detect if pasted text is tabular data (headers from Excel/CSV).
+ * Returns parsed column names if detected, null otherwise.
+ */
+function detectHeaders(text: string): string[] | null {
+  const lines = text.trim().split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length === 0) return null;
+
+  // Check if first line contains tabs or multiple commas (Excel copy)
+  const firstLine = lines[0];
+  const hasTabs = firstLine.includes('\t');
+  const commaCount = (firstLine.match(/,/g) || []).length;
+
+  if (hasTabs) {
+    return firstLine.split('\t').map((h) => h.trim()).filter(Boolean);
+  }
+  if (commaCount >= 2) {
+    return firstLine.split(',').map((h) => h.trim()).filter(Boolean);
+  }
+
+  // Single line with space-separated values (3+ items)
+  const spaceParts = firstLine.split(/\s+/).filter(Boolean);
+  if (spaceParts.length >= 3 && spaceParts.length <= 30) {
+    return spaceParts;
+  }
+
+  return null;
+}
+
+/**
+ * Infer type from example value
+ */
+function inferType(value: string): 'string' | 'number' | 'boolean' {
+  if (/^(true|false|yes|no|是|否)$/i.test(value)) return 'boolean';
+  if (/^-?\d+(\.\d+)?$/.test(value)) return 'number';
+  return 'string';
+}
+
 export default function TemplatePanel({
   embedded = false,
   extractionData,
@@ -51,6 +89,33 @@ export default function TemplatePanel({
     setGenerating(true);
     setError('');
 
+    // First line detection: if pasted text looks like tabular headers, parse directly
+    const detectedHeaders = detectHeaders(templatePrompt);
+
+    if (detectedHeaders && detectedHeaders.length >= 2) {
+      // Parse second line as example values if available
+      const lines = templatePrompt.trim().split(/\r?\n/).filter((l) => l.trim());
+      let exampleRow: string[] = [];
+      if (lines.length >= 2) {
+        const sep = lines[0].includes('\t') ? '\t' : ',';
+        exampleRow = lines[1].split(sep).map((v) => v.trim()).filter(Boolean);
+      }
+
+      const columns: ColumnConstraint[] = detectedHeaders.map((header, idx) => ({
+        key: header,
+        type: idx < exampleRow.length ? inferType(exampleRow[idx]) : 'string',
+        description: header,
+        example: idx < exampleRow.length ? exampleRow[idx] : '',
+      }));
+
+      setTemplateColumns(columns);
+      setTemplatePrompt('');
+      setTemplateGenerated(true);
+      setGenerating(false);
+      return;
+    }
+
+    // Not tabular data — call AI to generate columns from description
     try {
       const res = await fetch('/api/generate-template', {
         method: 'POST',
@@ -68,10 +133,12 @@ export default function TemplatePanel({
         return;
       }
 
-      if (data.columns && Array.isArray(data.columns)) {
+      if (data.columns && Array.isArray(data.columns) && data.columns.length > 0) {
         setTemplateColumns(data.columns);
         setTemplatePrompt('');
         setTemplateGenerated(true);
+      } else {
+        setError('未能生成模板列，请尝试更明确的描述或直接粘贴表头行');
       }
     } catch {
       setError('网络请求失败');

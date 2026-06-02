@@ -1,19 +1,18 @@
 import { NextRequest } from 'next/server'
 import OpenAI from 'openai'
 
-const TEMPLATE_SYSTEM_PROMPT = `你是医疗文档输出模板设计专家。根据用户的描述，设计结构化的输出列定义。
+const TEMPLATE_SYSTEM_PROMPT = `你是一个输出模板设计助手。根据用户提供的模板字段描述，为每个字段生成结构化的列定义。
 
 要求：
-1. 列名使用"模块-字段名(英文缩写)"格式（如"血常规-白细胞 (WBC)"），基本信息可省略模块前缀
-2. 临床诊断使用"诊断-"前缀（如"诊断-出院诊断"）
-3. 病理发现使用"病理描述-"前缀
-4. 每列提供清晰的中文描述和合理的示例值
-5. type 只能是 string、number 或 boolean
+1. key 使用用户提供的字段名（保持原样，不要翻译或修改）
+2. type 只能是 string、number 或 boolean（根据字段含义推断）
+3. description 用中文简短描述该字段的含义
+4. example 提供一个合理的示例值
 
-返回 JSON 数组，每项格式：
-{"key": "字段名", "type": "string|number|boolean", "description": "描述", "example": "示例值"}
+返回 JSON 对象，格式如下：
+{"columns": [{"key": "字段名", "type": "string", "description": "描述", "example": "示例值"}]}
 
-仅返回 JSON 数组，不要任何解释性文本。`
+仅返回 JSON 对象，不要任何解释性文本。`
 
 function isPrivateHost(url: string): boolean {
   try {
@@ -30,9 +29,8 @@ function isPrivateHost(url: string): boolean {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { prompt, files, extractionData } = body as {
+    const { prompt, extractionData } = body as {
       prompt?: string
-      files?: Array<{ name: string }>
       extractionData?: Array<{ data?: Record<string, unknown> }>
     }
 
@@ -54,25 +52,28 @@ export async function POST(request: NextRequest) {
 
     const openai = new OpenAI({ baseURL: baseUrl, apiKey })
 
-    // Build user message with context from file names and extracted fields
+    // Build user message — include extracted fields as reference for type inference
     let userMessage = prompt.trim()
-    if (files && files.length > 0) {
-      const fileNames = files.map((f) => f.name).join(', ')
-      userMessage += `\n\n参考文件：${fileNames}`
-    }
 
-    // If extraction data is available, list actual fields for precise template
     if (extractionData && extractionData.length > 0) {
-      const fieldSet = new Set<string>()
+      // Collect sample values for each field to help the LLM infer types
+      const fieldSamples = new Map<string, string[]>()
       for (const item of extractionData) {
-        if (item.data) {
-          for (const key of Object.keys(item.data)) {
-            fieldSet.add(key)
+        if (!item.data) continue
+        for (const [key, value] of Object.entries(item.data)) {
+          if (value == null) continue
+          const samples = fieldSamples.get(key) || []
+          if (samples.length < 3) {
+            samples.push(String(value).slice(0, 80))
+            fieldSamples.set(key, samples)
           }
         }
       }
-      if (fieldSet.size > 0) {
-        userMessage += `\n\n# 已提取的字段列表（请基于这些字段设计模板列）\n${Array.from(fieldSet).map((f) => `- ${f}`).join('\n')}`
+      if (fieldSamples.size > 0) {
+        userMessage += '\n\n# 已提取字段（用于推断类型和示例值）\n'
+        for (const [key, samples] of fieldSamples) {
+          userMessage += `- ${key}: ${samples.join(', ')}\n`
+        }
       }
     }
 
@@ -99,16 +100,31 @@ export async function POST(request: NextRequest) {
             ['string', 'number', 'boolean'].includes(c.type) &&
             typeof c.description === 'string',
         )
-      } else if (parsed && Array.isArray(parsed.columns)) {
-        columns = parsed.columns.filter(
-          (c) =>
-            typeof c.key === 'string' && c.key &&
-            ['string', 'number', 'boolean'].includes(c.type) &&
-            typeof c.description === 'string',
-        )
+      } else if (parsed && typeof parsed === 'object') {
+        // Find the first array property (could be "columns", "fields", "items", etc.)
+        for (const value of Object.values(parsed)) {
+          if (Array.isArray(value)) {
+            const filtered = value.filter(
+              (c) =>
+                typeof c.key === 'string' && c.key &&
+                ['string', 'number', 'boolean'].includes(c.type) &&
+                typeof c.description === 'string',
+            )
+            if (filtered.length > 0) {
+              columns = filtered
+              break
+            }
+          }
+        }
       }
-    } catch {
-      // JSON parse failed, return empty
+    } catch (parseErr) {
+      console.error('[generate-template] JSON parse error:', parseErr instanceof Error ? parseErr.message : parseErr)
+      console.error('[generate-template] Raw content:', content.slice(0, 500))
+      return Response.json({ error: 'AI 返回格式异常，请重试' }, { status: 502, headers: { 'Content-Type': 'application/json' } })
+    }
+
+    if (columns.length === 0) {
+      return Response.json({ error: '未能生成模板列，请尝试更明确的描述' }, { status: 502, headers: { 'Content-Type': 'application/json' } })
     }
 
     return Response.json({ columns })
