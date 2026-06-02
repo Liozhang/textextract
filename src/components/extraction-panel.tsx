@@ -44,6 +44,8 @@ const INIT_PHASES: PipelinePhase[] = [
   { key: 'extracting', status: 'pending', detail: '' },
 ];
 
+const BATCH_SIZE = 5;
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -60,6 +62,7 @@ export default function ExtractionPanel() {
   const extractionSnapshot = useStore((s) => s.extractionSnapshot);
   const setExtractionSnapshot = useStore((s) => s.setExtractionSnapshot);
   const resetTemplate = useStore((s) => s.resetTemplate);
+  const updateFile = useStore((s) => s.updateFile);
 
   const abortRef = useRef<AbortController | null>(null);
   const [hasExtracted, setHasExtracted] = useState(
@@ -111,7 +114,7 @@ export default function ExtractionPanel() {
   }, []);
 
   // ------------------------------------------------------------------
-  // Phase 1: Extract only (SSE stream to /api/extract)
+  // Phase 1: Extract only (SSE stream to /api/extract, batched)
   // ------------------------------------------------------------------
   const handleExtract = useCallback(async () => {
     if (isExtracting) return;
@@ -132,176 +135,230 @@ export default function ExtractionPanel() {
       status: 'extracting',
     });
 
-    const body = {
-      files: files.map((f) => ({
-        id: f.id,
-        name: f.name,
-        size: f.size,
-        type: f.type,
-        content: f.content,
-        dataUrl: f.dataUrl,
-      })),
-      prompts: {
-        extraction: promptSettings.extraction || undefined,
-      },
-    };
+    // Split files into batches of BATCH_SIZE
+    const allFileIds = files.map((f) => f.id);
+    const batches: Array<{ ids: string[]; files: typeof files }> = [];
+    for (let i = 0; i < allFileIds.length; i += BATCH_SIZE) {
+      const ids = allFileIds.slice(i, i + BATCH_SIZE);
+      const batchFiles = files.filter((f) => ids.includes(f.id));
+      batches.push({ ids, files: batchFiles });
+    }
 
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // Accumulated results across batches
+    const accumulatedResults: Array<{
+      fileId: string;
+      fileName: string;
+      groupId: string;
+      success: boolean;
+      data?: Record<string, unknown>;
+      error?: string;
+    }> = [];
+    let accumulatedGroups: Array<{ groupId: string; groupKey: string; fileCount: number }> = [];
+
     try {
-      const response = await fetch('/api/extract', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+        // Check abort before each batch
+        if (controller.signal.aborted) break;
 
-      if (!response.ok) {
-        throw new Error(t('review.serverError', { code: response.status, text: response.statusText }));
-      }
+        const { files: batchFiles } = batches[batchIdx];
+        const globalOffset = batchIdx * BATCH_SIZE;
+        const isFirstBatch = batchIdx === 0;
 
-      let completedFiles = 0;
-      const totalFiles = total;
-      let groupsDone = false;
-      let extractedCount = 0;
+        const body = {
+          files: batchFiles.map((f) => ({
+            id: f.id,
+            name: f.name,
+            size: f.size,
+            type: f.type,
+            content: f.content,
+            dataUrl: f.dataUrl,
+          })),
+          prompts: {
+            extraction: promptSettings.extraction || undefined,
+          },
+        };
 
-      await consumeSSEStream(response, (event, parsed) => {
-        switch (event) {
-          case 'phase': {
-            const phase = parsed.phase as string;
-            setPhases((prev) =>
-              prev.map((p) =>
-                p.key === phase
-                  ? { ...p, status: 'active', detail: '' }
-                  : p,
-              ),
-            );
-            break;
-          }
+        const response = await fetch('/api/extract', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
 
-          case 'grouping_done': {
-            setPhases((prev) =>
-              prev.map((p) =>
-                p.key === 'grouping'
-                  ? { ...p, status: 'done', detail: `${parsed.groups?.length ?? 0}` }
-                  : p,
-              ),
-            );
-            groupsDone = true;
-            break;
-          }
+        if (!response.ok) {
+          throw new Error(t('review.serverError', { code: response.status, text: response.statusText }));
+        }
 
-          case 'file_retry': {
-            setPhases((prev) =>
-              prev.map((p) =>
-                p.key === 'extracting'
-                  ? { ...p, detail: `(${completedFiles + 1}/${totalFiles}) retry ${parsed.attempt}` }
-                  : p,
-              ),
-            );
-            break;
-          }
+        let batchCompleted = 0;
+        const batchTotal = batchFiles.length;
+        const prevCompleted = accumulatedResults.length;
+        let extractedCount = 0;
+        accumulatedResults.forEach((r) => { if (r.success) extractedCount++; });
 
-          case 'file_start': {
-            setPhases((prev) =>
-              prev.map((p) =>
-                p.key === 'extracting'
-                  ? { ...p, status: 'active', detail: `(${completedFiles + 1}/${totalFiles})` }
-                  : p,
-              ),
-            );
-            setProgress({ currentFile: parsed.fileName ?? '' });
-            break;
-          }
+        await consumeSSEStream(response, (event, parsed) => {
+          switch (event) {
+            case 'phase': {
+              if (isFirstBatch) {
+                const phase = parsed.phase as string;
+                setPhases((prev) =>
+                  prev.map((p) =>
+                    p.key === phase
+                      ? { ...p, status: 'active', detail: '' }
+                      : p,
+                  ),
+                );
+              }
+              break;
+            }
 
-          case 'file_complete': {
-            completedFiles++;
-            extractedCount += parsed.success ? 1 : 0;
-            setProgress({ completedFiles });
-            if (completedFiles >= totalFiles && groupsDone) {
+            case 'grouping_done': {
+              if (isFirstBatch) {
+                setPhases((prev) =>
+                  prev.map((p) =>
+                    p.key === 'grouping'
+                      ? { ...p, status: 'done', detail: `${parsed.groups?.length ?? 0}` }
+                      : p,
+                  ),
+                );
+              }
+              if (!accumulatedGroups.length) {
+                accumulatedGroups = parsed.groups || [];
+              }
+              break;
+            }
+
+            case 'file_retry': {
               setPhases((prev) =>
                 prev.map((p) =>
                   p.key === 'extracting'
-                    ? { ...p, status: 'done', detail: `(${extractedCount}/${totalFiles})` }
+                    ? { ...p, detail: `(${prevCompleted + batchCompleted + 1}/${total}) retry ${parsed.attempt}` }
                     : p,
                 ),
               );
+              break;
             }
-            addResult({
-              fileId: String(parsed.fileId ?? ''),
-              fileName: parsed.fileName ?? '',
-              success: parsed.success ?? false,
-              data: parsed.data,
-              error: parsed.error,
-            });
-            break;
-          }
 
-          case 'extraction_done': {
-            setExtractionSnapshot({
-              results: parsed.results,
-              groups: parsed.groups,
-            });
-            setPhases((prev) =>
-              prev.map((p) =>
-                (p.key === 'grouping' || p.key === 'extracting')
-                  ? { ...p, status: 'done' }
-                  : p,
-              ),
-            );
-            setProgress({ status: 'extraction_done' });
-            setHasExtracted(true);
-            break;
-          }
+            case 'file_start': {
+              setPhases((prev) =>
+                prev.map((p) =>
+                  p.key === 'extracting'
+                    ? { ...p, status: 'active', detail: `(${prevCompleted + batchCompleted + 1}/${total})` }
+                    : p,
+                ),
+              );
+              setProgress({ currentFile: parsed.fileName ?? '' });
+              break;
+            }
 
-          case 'error': {
-            setPhases((prev) =>
-              prev.map((p) => {
-                if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
-                return p;
-              }),
-            );
-            setProgress({ status: 'error' });
-            addResult({
-              fileId: 'system',
-              fileName: t('review.systemError'),
-              success: false,
-              error: parsed.message ?? t('review.unknownError'),
-            });
-            setHasExtracted(true);
-            break;
-          }
-        }
-      });
+            case 'file_complete': {
+              batchCompleted++;
+              if (parsed.success) extractedCount++;
+              const globalCompleted = prevCompleted + batchCompleted;
+              setProgress({ completedFiles: globalCompleted });
+              if (globalCompleted >= total) {
+                setPhases((prev) =>
+                  prev.map((p) =>
+                    p.key === 'extracting'
+                      ? { ...p, status: 'done', detail: `(${extractedCount}/${total})` }
+                      : p,
+                  ),
+                );
+              }
+              addResult({
+                fileId: String(parsed.fileId ?? ''),
+                fileName: parsed.fileName ?? '',
+                success: parsed.success ?? false,
+                data: parsed.data,
+                error: parsed.error,
+              });
+              // 1.2: Clear file data from store after successful extraction
+              if (parsed.success) {
+                updateFile(String(parsed.fileId ?? ''), { dataUrl: undefined, content: undefined });
+              }
+              break;
+            }
 
-      // Stream ended without explicit extraction_done — build fallback snapshot
-      if (useStore.getState().progress.status === 'extracting') {
+            case 'extraction_done': {
+              const batchResults = parsed.results || [];
+              accumulatedResults.push(...batchResults.map((r: any) => ({
+                fileId: r.fileId ?? '',
+                fileName: r.fileName ?? '',
+                groupId: r.groupId ?? '',
+                success: r.success ?? false,
+                data: r.data,
+                error: r.error,
+              })));
+              if (!accumulatedGroups.length) {
+                accumulatedGroups = parsed.groups || [];
+              }
+              break;
+            }
+
+            case 'error': {
+              setPhases((prev) =>
+                prev.map((p) => {
+                  if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
+                  return p;
+                }),
+              );
+              setProgress({ status: 'error' });
+              addResult({
+                fileId: 'system',
+                fileName: t('review.systemError'),
+                success: false,
+                error: parsed.message ?? t('review.unknownError'),
+              });
+              setHasExtracted(true);
+              return; // stop processing this batch
+            }
+          }
+        });
+
+        // If status was set to error, stop all batches
+        if (useStore.getState().progress.status === 'error') break;
+      }
+
+      // All batches complete — build final snapshot
+      if (!controller.signal.aborted && useStore.getState().progress.status === 'extracting') {
+        setExtractionSnapshot({
+          results: accumulatedResults,
+          groups: accumulatedGroups,
+        });
         setPhases((prev) =>
-          prev.map((p) => (p.status === 'active' ? { ...p, status: 'done' } : p)),
+          prev.map((p) =>
+            (p.key === 'grouping' || p.key === 'extracting')
+              ? { ...p, status: 'done' }
+              : p,
+          ),
         );
-        const currentResults = useStore.getState().results;
-        if (currentResults.length > 0) {
-          setExtractionSnapshot({
-            results: currentResults.map((r) => ({
-              fileId: r.fileId,
-              fileName: r.fileName,
-              groupId: 'fallback',
-              success: r.success,
-              data: r.data,
-              error: r.error,
-            })),
-            groups: [{ groupId: 'fallback', groupKey: 'All Files', fileCount: currentResults.length }],
-          });
-          setProgress({ status: 'extraction_done' });
-        } else {
-          setProgress({ status: 'error' });
+        // Fallback: if no groups from SSE, build from results
+        if (!accumulatedGroups.length && accumulatedResults.length > 0) {
+          accumulatedGroups = Array.from(
+            new Map(accumulatedResults.map((r) => [r.groupId, { groupId: r.groupId, groupKey: r.fileName.split('.')[0], fileCount: 1 }])).values(),
+          );
         }
+        setExtractionSnapshot({
+          results: accumulatedResults,
+          groups: accumulatedGroups,
+        });
+        setProgress({ status: 'extraction_done' });
         setHasExtracted(true);
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
-        setProgress({ status: 'idle', currentFile: '' });
+        // Preserve extraction_done if we already have results from previous batches
+        if (accumulatedResults.length > 0) {
+          setExtractionSnapshot({
+            results: accumulatedResults,
+            groups: accumulatedGroups,
+          });
+          setProgress({ status: 'extraction_done', currentFile: '' });
+        } else {
+          setProgress({ status: 'idle', currentFile: '' });
+        }
         setPhases((prev) =>
           prev.map((p) => {
             if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
@@ -335,6 +392,7 @@ export default function ExtractionPanel() {
     clearResults,
     setProgress,
     addResult,
+    updateFile,
     setExtractionSnapshot,
     setMergedExportData,
     resetTemplate,

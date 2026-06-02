@@ -4,6 +4,8 @@ import mammoth from 'mammoth'
 import sharp from 'sharp'
 
 import { parseJsonResponse } from '@/lib/pipeline/json-parser'
+
+export const maxDuration = 300
 import { groupFilesByPrefix, findGroupForFile } from '@/lib/pipeline/file-grouper'
 import {
   EXTRACTION_SYSTEM_MESSAGE,
@@ -441,7 +443,6 @@ export async function POST(request: NextRequest) {
                   groupId: group.groupId,
                   success: true,
                   data: perFileResults[perFileResults.length - 1].data,
-                  imageDataUrl,
                 })
 
                 lastError = '' // clear on success

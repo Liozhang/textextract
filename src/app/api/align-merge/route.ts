@@ -1,6 +1,8 @@
 import { NextRequest } from 'next/server'
 import OpenAI from 'openai'
 
+export const maxDuration = 300
+
 import { alignSchemaWithAI, alignSchema } from '@/lib/pipeline/schema-aligner'
 import {
   collectFieldPaths,
@@ -62,6 +64,26 @@ function isPrivateHost(url: string): boolean {
 
 function sseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+}
+
+// ─── Worker pool for concurrent merge processing ─────────────────────────
+
+async function workerPool<T>(
+  items: T[],
+  concurrency: number,
+  handler: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0
+
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex++
+      await handler(items[index], index)
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+  await Promise.all(workers)
 }
 
 // ─── Merge fallback helper ──────────────────────────────────────────────────
@@ -243,8 +265,9 @@ export async function POST(request: NextRequest) {
           // ── Phase 3: Group merge (fields now aligned and flat) ────────────
           send('phase', { phase: 'merging' })
           const mergedRecords: MergedRecord[] = []
+          const mergeConcurrency = Number(process.env.MERGE_CONCURRENCY) || 3
 
-          const mergePromises = groups.map(async (group) => {
+          await workerPool(groups, mergeConcurrency, async (group) => {
             const groupAligned = alignedResults.filter((r) => r.groupId === group.groupId)
 
             send('merge_start', {
@@ -265,11 +288,8 @@ export async function POST(request: NextRequest) {
               conflicts: merged.conflicts,
             })
 
-            return merged
+            mergedRecords.push(merged)
           })
-
-          const mergeResults = await Promise.all(mergePromises)
-          mergedRecords.push(...mergeResults)
 
           // ── Final: build UnifiedSchema and send all_done ──────────────────
           const unifiedSchema = buildUnifiedSchemaFromMerged(mergedRecords, schema.field_order)
