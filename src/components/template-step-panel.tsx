@@ -76,6 +76,7 @@ export default function TemplateStepPanel() {
   const t = useT();
   const progress = useStore((s) => s.progress);
   const extractionSnapshot = useStore((s) => s.extractionSnapshot);
+  const keyAlignmentResult = useStore((s) => s.keyAlignmentResult);
   const addResult = useStore((s) => s.addResult);
   const setProgress = useStore((s) => s.setProgress);
   const setMergedExportData = useStore((s) => s.setMergedExportData);
@@ -167,6 +168,7 @@ export default function TemplateStepPanel() {
 
     const currentColumns = useStore.getState().templateColumns;
     const currentPromptSettings = useStore.getState().promptSettings;
+    const keyAlignment = useStore.getState().keyAlignmentResult;
 
     const body = {
       extractionData: snapshot.results.map((r) => ({
@@ -183,6 +185,7 @@ export default function TemplateStepPanel() {
         schemaAlign: currentPromptSettings.schemaAlign || undefined,
         merge: currentPromptSettings.merge || undefined,
       },
+      ...(keyAlignment ? { skipAlign: true, fieldOrder: keyAlignment.fieldOrder } : {}),
     };
 
     const controller = new AbortController();
@@ -450,6 +453,7 @@ export default function TemplateStepPanel() {
                 <TemplatePanel
                   embedded
                   extractionData={extractionSnapshot?.results}
+                  prefilledKeys={keyAlignmentResult?.fieldOrder}
                   onConfirm={() => handleAlignMerge()}
                   onSkip={() => {
                     resetTemplate();

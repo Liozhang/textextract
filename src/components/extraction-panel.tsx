@@ -64,12 +64,13 @@ export default function ExtractionPanel() {
   const promptSettings = useStore((s) => s.promptSettings);
   const extractionSnapshot = useStore((s) => s.extractionSnapshot);
   const setExtractionSnapshot = useStore((s) => s.setExtractionSnapshot);
+  const clearKeyAlignmentResult = useStore((s) => s.clearKeyAlignmentResult);
   const resetTemplate = useStore((s) => s.resetTemplate);
   const updateFile = useStore((s) => s.updateFile);
 
   const abortRef = useRef<AbortController | null>(null);
   const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set());
-  const [previewResult, setPreviewResult] = useState<{ fileId: string; fileName: string; data: Record<string, unknown> } | null>(null);
+  const [previewResult, setPreviewResult] = useState<{ fileId: string; fileName: string; data: Record<string, unknown>; imageDataUrl?: string } | null>(null);
   const [hasExtracted, setHasExtracted] = useState(
     progress.status === 'extraction_done' || progress.status === 'done' || progress.status === 'aligning_merging',
   );
@@ -125,6 +126,7 @@ export default function ExtractionPanel() {
     if (isExtracting) return;
 
     clearResults();
+    clearKeyAlignmentResult();
     setHasExtracted(false);
     setExtractionSnapshot(null);
     setPhases([...INIT_PHASES]);
@@ -302,6 +304,7 @@ export default function ExtractionPanel() {
                 success: r.success ?? false,
                 data: r.data,
                 error: r.error,
+                imageDataUrl: r.imageDataUrl,
               })));
               if (!accumulatedGroups.length) {
                 accumulatedGroups = parsed.groups || [];
@@ -491,6 +494,7 @@ export default function ExtractionPanel() {
         success: boolean;
         data?: Record<string, unknown>;
         error?: string;
+        imageDataUrl?: string;
       }> = [];
 
       await consumeSSEStream(response, (event, parsed) => {
@@ -546,6 +550,7 @@ export default function ExtractionPanel() {
               success: parsed.success ?? false,
               data: parsed.data,
               error: parsed.error,
+              imageDataUrl: parsed.imageDataUrl,
             });
             break;
 
@@ -625,7 +630,7 @@ export default function ExtractionPanel() {
     } finally {
       abortRef.current = null;
     }
-  }, [t, setProgress, setExtractionSnapshot]);
+  }, [t, setProgress, setExtractionSnapshot, clearKeyAlignmentResult]);
 
   // Convenience: retry all failed files
   const handleRetryFailed = useCallback(() => {
@@ -732,173 +737,172 @@ export default function ExtractionPanel() {
           </div>
         )}
 
-        {/* ---------- Extraction Done: Results Preview ---------- */}
+        {/* ---------- Extraction Done: Results ---------- */}
         {isExtractionDone && extractionSummary && (
           <div className="flex flex-col gap-4">
             <Separator />
 
-            {/* Extraction Complete (collapsible) */}
-            <Card>
-              <Collapsible defaultOpen>
-                <CollapsibleTrigger className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium hover:bg-muted/50 rounded-t-md">
-                  <CheckCircle2 className="text-emerald-600 size-4" />
-                  <span className="font-semibold">{t('review.extractionComplete')}</span>
-                  <span className="ml-2 text-xs text-muted-foreground">
-                    {t('review.extractionSummary', {
-                      total: extractionSummary.total,
-                      succeeded: extractionSummary.succeeded,
-                      failed: extractionSummary.failed,
-                    })}
-                  </span>
-                  <ChevronDown className="ml-auto size-4 text-muted-foreground transition-transform" />
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <CardContent className="pt-0 flex flex-col gap-4">
-                    {/* Extracted fields */}
-                    {extractedFields.length > 0 && (
-                      <div className="flex flex-col gap-2">
-                        <span className="text-sm font-medium text-muted-foreground">
-                          {t('review.extractedFields', { count: extractedFields.length })}
-                        </span>
-                        <div className="flex flex-wrap gap-1">
-                          {extractedFields.map((field) => (
-                            <Badge key={field} variant="outline" className="text-xs">
-                              {field}
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+            {/* Summary + Action bar */}
+            <div className="flex flex-wrap items-center gap-3">
+              <CheckCircle2 className="text-emerald-600 size-4" />
+              <span className="text-sm font-medium">
+                {t('review.extractionComplete')}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {t('review.extractionSummary', {
+                  total: extractionSummary.total,
+                  succeeded: extractionSummary.succeeded,
+                  failed: extractionSummary.failed,
+                })}
+              </span>
+              <div className="flex-1" />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => {
+                  if (selectedResults.size === extractionSnapshot!.results.length) {
+                    setSelectedResults(new Set());
+                  } else {
+                    setSelectedResults(new Set(extractionSnapshot!.results.map((r) => r.fileId)));
+                  }
+                }}
+              >
+                {selectedResults.size === extractionSnapshot?.results.length
+                  ? t('review.deselectAll')
+                  : t('review.selectAll')}
+              </Button>
+              {selectedResults.size > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={isExtracting}
+                  onClick={() => handleRetrySelected(Array.from(selectedResults))}
+                >
+                  <RotateCcw className="size-3 mr-1" />
+                  {t('review.retrySelected', { count: selectedResults.size })}
+                </Button>
+              )}
+              {extractionSummary.failed > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={isExtracting}
+                  onClick={handleRetryFailed}
+                >
+                  <RotateCcw className="size-3 mr-1" />
+                  {t('review.retryFailed', { count: extractionSummary.failed })}
+                </Button>
+              )}
+            </div>
 
-                    {/* Action bar: select all / retry selected / retry failed */}
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs"
-                        onClick={() => {
-                          if (selectedResults.size === extractionSnapshot!.results.length) {
-                            setSelectedResults(new Set());
-                          } else {
-                            setSelectedResults(new Set(extractionSnapshot!.results.map((r) => r.fileId)));
-                          }
-                        }}
-                      >
-                        {selectedResults.size === extractionSnapshot?.results.length
-                          ? t('review.deselectAll')
-                          : t('review.selectAll')}
-                      </Button>
-                      {selectedResults.size > 0 && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 text-xs"
-                          disabled={isExtracting}
-                          onClick={() => handleRetrySelected(Array.from(selectedResults))}
-                        >
-                          <RotateCcw className="size-3 mr-1" />
-                          {t('review.retrySelected', { count: selectedResults.size })}
-                        </Button>
-                      )}
-                      {extractionSummary.failed > 0 && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 text-xs"
-                          disabled={isExtracting}
-                          onClick={handleRetryFailed}
-                        >
-                          <RotateCcw className="size-3 mr-1" />
-                          {t('review.retryFailed', { count: extractionSummary.failed })}
-                        </Button>
-                      )}
-                    </div>
-
-                    {/* Per-file extraction status with checkboxes and preview */}
-                    <div className="max-h-[300px] overflow-auto rounded-md border">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b bg-muted/50 text-left text-muted-foreground">
-                            <th className="px-2 py-1.5 w-8" />
-                            <th className="px-2 py-1.5 w-6" />
-                            <th className="px-3 py-1.5">{t('review.fileName')}</th>
-                            <th className="px-3 py-1.5 w-20 text-right">{t('review.fieldsCount', { count: 'N' }).replace(/\d+/, '')}</th>
-                            <th className="px-2 py-1.5 w-8" />
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {extractionSnapshot?.results.map((r) => (
-                            <tr
-                              key={r.fileId}
-                              className={`border-b last:border-0 ${selectedResults.has(r.fileId) ? 'bg-primary/5' : ''}`}
-                            >
-                              <td className="px-2 py-1">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedResults.has(r.fileId)}
-                                  onChange={() => {
-                                    setSelectedResults((prev) => {
-                                      const next = new Set(prev);
-                                      if (next.has(r.fileId)) next.delete(r.fileId);
-                                      else next.add(r.fileId);
-                                      return next;
-                                    });
-                                  }}
-                                  className="size-3.5 rounded"
-                                />
-                              </td>
-                              <td className="px-2 py-1">
-                                {r.success ? (
-                                  <CheckCircle2 className="size-3.5 text-emerald-600" />
-                                ) : (
-                                  <XCircle className="size-3.5 text-destructive" />
-                                )}
-                              </td>
-                              <td className="px-3 py-1">{r.fileName}</td>
-                              <td className="px-3 py-1 text-right text-muted-foreground">
-                                {r.success && r.data ? Object.keys(r.data).length : '\u2014'}
-                              </td>
-                              <td className="px-2 py-1">
-                                {r.success && r.data && (
-                                  <button
-                                    onClick={() => setPreviewResult({ fileId: r.fileId, fileName: r.fileName, data: r.data! })}
-                                    className="text-muted-foreground hover:text-primary transition-colors"
-                                    title={t('review.preview')}
-                                  >
-                                    <Eye className="size-3.5" />
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </CardContent>
-                </CollapsibleContent>
-              </Collapsible>
-            </Card>
+            {/* Per-file extraction results (always visible) */}
+            <div className="max-h-[400px] overflow-auto rounded-md border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/50 text-left text-muted-foreground">
+                    <th className="px-2 py-1.5 w-8" />
+                    <th className="px-2 py-1.5 w-6" />
+                    <th className="px-3 py-1.5">{t('review.fileName')}</th>
+                    <th className="px-3 py-1.5 w-20 text-right">{t('review.fieldsCount', { count: '' })}</th>
+                    <th className="px-2 py-1.5 w-8" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {extractionSnapshot?.results.map((r) => (
+                    <tr
+                      key={r.fileId}
+                      className={`border-b last:border-0 transition-colors ${selectedResults.has(r.fileId) ? 'bg-primary/5' : 'hover:bg-muted/30'}`}
+                    >
+                      <td className="px-2 py-1.5">
+                        <input
+                          type="checkbox"
+                          checked={selectedResults.has(r.fileId)}
+                          onChange={() => {
+                            setSelectedResults((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(r.fileId)) next.delete(r.fileId);
+                              else next.add(r.fileId);
+                              return next;
+                            });
+                          }}
+                          className="size-3.5 rounded"
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        {r.success ? (
+                          <CheckCircle2 className="size-3.5 text-emerald-600" />
+                        ) : (
+                          <XCircle className="size-3.5 text-destructive" />
+                        )}
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <span className="truncate max-w-[240px] block">{r.fileName}</span>
+                        {r.error && (
+                          <span className="text-[10px] text-destructive block truncate max-w-[240px]">{r.error}</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">
+                        {r.success && r.data ? Object.keys(r.data).length : '\u2014'}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        {(r.success && r.data) || r.imageDataUrl ? (
+                          <button
+                            onClick={() => setPreviewResult({ fileId: r.fileId, fileName: r.fileName, data: r.data ?? {}, imageDataUrl: r.imageDataUrl })}
+                            className="text-muted-foreground hover:text-primary transition-colors"
+                            title={t('review.preview')}
+                          >
+                            <Eye className="size-3.5" />
+                          </button>
+                        ) : (
+                          <span className="text-muted-foreground/30">&mdash;</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
 
             {/* Result Preview Dialog */}
             {previewResult && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setPreviewResult(null)}>
-                <Card className="max-w-lg w-full mx-4 max-h-[80vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+                <Card className="max-w-2xl w-full mx-4 max-h-[85vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                     <CardTitle className="text-base">{previewResult.fileName}</CardTitle>
-                    <button onClick={() => setPreviewResult(null)} className="text-muted-foreground hover:text-foreground">
+                    <button onClick={() => setPreviewResult(null)} className="text-muted-foreground hover:text-foreground text-lg">
                       &times;
                     </button>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="flex flex-col gap-4">
+                    {/* Image preview (if available) */}
+                    {previewResult.imageDataUrl && (
+                      <div className="rounded-md border overflow-hidden">
+                        {/* eslint-disable-next-line @next/next/image */}
+                        <img
+                          src={previewResult.imageDataUrl}
+                          alt={previewResult.fileName}
+                          className="max-h-[300px] w-auto mx-auto object-contain"
+                        />
+                      </div>
+                    )}
+                    {/* Extracted JSON */}
                     <div className="space-y-2">
-                      {Object.entries(previewResult.data).map(([key, value]) => (
-                        <div key={key} className="flex gap-2 text-sm">
-                          <span className="font-medium text-muted-foreground shrink-0 min-w-[120px]">{key}</span>
-                          <span className="break-all">
-                            {typeof value === 'string' ? value : JSON.stringify(value)}
-                          </span>
-                        </div>
-                      ))}
+                      <span className="text-xs font-medium text-muted-foreground">
+                        {t('review.fieldsCount', { count: Object.keys(previewResult.data).length })}
+                      </span>
+                      <div className="max-h-[300px] overflow-auto rounded-md border p-2">
+                        {Object.entries(previewResult.data).map(([key, value]) => (
+                          <div key={key} className="flex gap-2 text-sm py-0.5 border-b border-muted/30 last:border-0">
+                            <span className="font-medium text-muted-foreground shrink-0 min-w-[120px]">{key}</span>
+                            <span className="break-all">
+                              {typeof value === 'string' ? value : JSON.stringify(value)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </CardContent>
                 </Card>

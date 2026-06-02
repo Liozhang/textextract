@@ -510,7 +510,7 @@ export async function POST(request: NextRequest) {
           })
 
           // ── Send extraction_done with results and groups ──────────────────
-          // Strip imageDataUrl to reduce payload (already sent via file_complete)
+          // Send extraction_done with results and groups (include imageDataUrl for preview)
           send('extraction_done', {
             results: perFileResults.map((r) => ({
               fileId: r.fileId,
@@ -519,6 +519,7 @@ export async function POST(request: NextRequest) {
               success: r.success,
               data: r.data,
               error: r.error,
+              imageDataUrl: r.imageDataUrl,
             })),
             groups: fileGroups.map((g) => ({
               groupId: g.groupId,

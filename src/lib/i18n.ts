@@ -25,12 +25,13 @@ const en = {
     reset: 'Reset',
   },
   app: {
-    title: 'OCR Extract',
+    title: 'Message Extract',
     subtitle: 'Upload documents, AI automatically extracts structured data',
   },
   steps: {
     upload: 'Upload',
     extract: 'Extract',
+    merge_keys: 'Normalize',
     template: 'Template',
     export: 'Export',
   },
@@ -49,6 +50,18 @@ const en = {
     example: 'Example',
     addColumn: 'Add Column',
     removeColumn: 'Remove',
+    addKeyPlaceholder: 'Enter key name...',
+    addKeyButton: 'Add',
+    importFields: 'Import all fields',
+    importFieldsDesc: 'Auto-fill with all extracted field names',
+    valuePreview: 'Value preview ({{count}} files)',
+    noValue: '-',
+    pendingEntries: 'Pending entries ({{count}})',
+    pendingDesc: 'Review extracted values for each key below',
+    emptyTemplate: 'No columns yet. Add keys manually, import extracted fields, or use AI generation above.',
+    manualSection: 'Manual key input',
+    manualDesc: 'Add keys one by one or import all extracted fields at once',
+    removeFromTemplate: 'Remove',
   },
   upload: {
     title: 'File Upload',
@@ -83,6 +96,30 @@ const en = {
   merge: {
     aiMerged: 'AI merged {{count}} records',
     fallbackMerged: 'Strategy merged {{count}} records',
+  },
+  mergeKeys: {
+    title: 'Key Normalization',
+    description: 'Preview extracted field names and optionally merge synonyms',
+    extractionSummary: '{{total}} files, {{succeeded}} succeeded, {{failed}} failed',
+    uniqueKeys: 'Unique fields ({{count}})',
+    referenceText: 'Custom reference (optional)',
+    referenceTextPlaceholder: 'Enter expected key names, one per line...',
+    autoMerge: 'Auto-normalize',
+    autoMerging: 'Normalizing keys...',
+    skip: 'Skip',
+    proceed: 'Proceed to Template',
+    remap: 'Re-normalize',
+    mappingTable: 'Field Mapping',
+    originalKey: 'Original',
+    canonicalKey: 'Canonical',
+    action: 'Action',
+    mappingSummary: '{{from}} fields \u2192 {{to}} canonical names',
+    noMapping: 'All fields are unique',
+    aiFailed: 'AI normalization failed, used rule-based fallback',
+    phaseCollecting: 'Collecting fields...',
+    phaseAligning: 'AI aligning keys...',
+    phaseApplying: 'Applying schema...',
+    abort: 'Cancel',
   },
   review: {
     title: 'Review & Extract',
@@ -165,6 +202,7 @@ const en = {
   settings: {
     title: 'Prompt Settings',
     extraction: 'Extraction Prompt',
+    keyAlign: 'Key Alignment Prompt',
     schemaAlign: 'Schema Alignment Prompt',
     merge: 'Merge Prompt',
     restoreDefaults: 'Restore Defaults',
@@ -181,6 +219,7 @@ const zh: {
   template: Record<string, string>;
   pipeline: Record<string, string>;
   merge: Record<string, string>;
+  mergeKeys: Record<string, string>;
   review: Record<string, string>;
   export: Record<string, string>;
   settings: Record<string, string>;
@@ -199,12 +238,13 @@ const zh: {
     reset: '\u91CD\u7F6E',
   },
   app: {
-    title: 'OCR Extract',
+    title: 'Message Extract',
     subtitle: '\u4E0A\u4F20\u6587\u6863\uFF0CAI \u81EA\u52A8\u63D0\u53D6\u7ED3\u6784\u5316\u6570\u636E',
   },
   steps: {
     upload: '\u4E0A\u4F20\u6587\u4EF6',
     extract: '\u5185\u5BB9\u63D0\u53D6',
+    merge_keys: '\u952E\u540D\u5F52\u4E00\u5316',
     template: '\u6A21\u677F\u5236\u4F5C',
     export: '\u5BFC\u51FA\u7ED3\u679C',
   },
@@ -223,6 +263,18 @@ const zh: {
     example: '\u793A\u4F8B\u503C',
     addColumn: '\u6DFB\u52A0\u5217',
     removeColumn: '\u5220\u9664',
+    addKeyPlaceholder: '\u8F93\u5165\u952E\u540D...',
+    addKeyButton: '\u6DFB\u52A0',
+    importFields: '\u5BFC\u5165\u6240\u6709\u5B57\u6BB5',
+    importFieldsDesc: '\u81EA\u52A8\u586B\u5145\u6240\u6709\u63D0\u53D6\u5230\u7684\u5B57\u6BB5\u540D',
+    valuePreview: '\u503C\u9884\u89C8\uFF08{{count}} \u4E2A\u6587\u4EF6\uFF09',
+    noValue: '-',
+    pendingEntries: '\u5F85\u786E\u8BA4\u6761\u76EE\uFF08{{count}}\uFF09',
+    pendingDesc: '\u67E5\u770B\u6BCF\u4E2A\u952E\u5728\u5404\u6587\u4EF6\u4E2D\u7684\u63D0\u53D6\u503C',
+    emptyTemplate: '\u8FD8\u6CA1\u6709\u5217\u3002\u53EF\u4EE5\u624B\u52A8\u6DFB\u52A0\u952E\u3001\u5BFC\u5165\u63D0\u53D6\u5B57\u6BB5\uFF0C\u6216\u4F7F\u7528\u4E0A\u65B9 AI \u751F\u6210\u3002',
+    manualSection: '\u624B\u52A8\u8F93\u5165\u952E',
+    manualDesc: '\u9010\u4E2A\u6DFB\u52A0\u952E\u540D\uFF0C\u6216\u4E00\u952E\u5BFC\u5165\u6240\u6709\u63D0\u53D6\u5B57\u6BB5',
+    removeFromTemplate: '\u79FB\u9664',
   },
   upload: {
     title: '\u6587\u4EF6\u4E0A\u4F20',
@@ -257,6 +309,30 @@ const zh: {
   merge: {
     aiMerged: 'AI \u5408\u5E76 {{count}} \u6761\u8BB0\u5F55',
     fallbackMerged: '\u7B56\u7565\u5408\u5E76 {{count}} \u6761\u8BB0\u5F55',
+  },
+  mergeKeys: {
+    title: '\u952E\u540D\u5F52\u4E00\u5316',
+    description: '\u9884\u89C8\u63D0\u53D6\u7684\u5B57\u6BB5\u540D\uFF0C\u5C06\u540C\u4E49\u5B57\u6BB5\u5408\u5E76\u4E3A\u89C4\u8303\u540D\u79F0',
+    extractionSummary: '\u5171 {{total}} \u4E2A\u6587\u4EF6\uFF0C{{succeeded}} \u6210\u529F\uFF0C{{failed}} \u5931\u8D25',
+    uniqueKeys: '\u552F\u4E00\u5B57\u6BB5\uFF08{{count}}\uFF09',
+    referenceText: '\u81EA\u5B9A\u4E49\u53C2\u8003\uFF08\u53EF\u9009\uFF09',
+    referenceTextPlaceholder: '\u8F93\u5165\u671F\u671B\u7684\u952E\u540D\uFF0C\u6BCF\u884C\u4E00\u4E2A...',
+    autoMerge: '\u81EA\u52A8\u5F52\u4E00\u5316',
+    autoMerging: '\u6B63\u5728\u5F52\u4E00\u5316\u952E\u540D...',
+    skip: '\u8DF3\u8FC7',
+    proceed: '\u8FDB\u5165\u6A21\u677F\u5236\u4F5C',
+    remap: '\u91CD\u65B0\u5F52\u4E00\u5316',
+    mappingTable: '\u5B57\u6BB5\u6620\u5C04',
+    originalKey: '\u539F\u59CB\u952E\u540D',
+    canonicalKey: '\u89C4\u8303\u540D\u79F0',
+    action: '\u5904\u7406\u65B9\u5F0F',
+    mappingSummary: '{{from}} \u4E2A\u5B57\u6BB5 \u2192 {{to}} \u4E2A\u89C4\u8303\u952E',
+    noMapping: '\u6240\u6709\u5B57\u6BB5\u5DF2\u552F\u4E00',
+    aiFailed: 'AI \u5F52\u4E00\u5316\u5931\u8D25\uFF0C\u5DF2\u4F7F\u7528\u89C4\u5219\u56DE\u9000',
+    phaseCollecting: '\u6B63\u5728\u6536\u96C6\u5B57\u6BB5...',
+    phaseAligning: 'AI \u6B63\u5728\u5BF9\u9F50\u952E\u540D...',
+    phaseApplying: '\u6B63\u5728\u5E94\u7528\u65B9\u6848...',
+    abort: '\u53D6\u6D88',
   },
   review: {
     title: '\u5BA1\u6838\u4E0E\u63D0\u53D6',
@@ -339,6 +415,7 @@ const zh: {
   settings: {
     title: 'Prompt \u8BBE\u7F6E',
     extraction: '\u63D0\u53D6 Prompt',
+    keyAlign: '\u952E\u540D\u5F52\u4E00\u5316 Prompt',
     schemaAlign: 'Schema \u5BF9\u9F50 Prompt',
     merge: '\u5408\u5E76 Prompt',
     restoreDefaults: '\u6062\u590D\u9ED8\u8BA4',
@@ -369,6 +446,7 @@ type TranslationMap = {
   template: Record<string, string>;
   pipeline: Record<string, string>;
   merge: Record<string, string>;
+  mergeKeys: Record<string, string>;
   review: Record<string, string>;
   export: Record<string, string>;
   settings: Record<string, string>;

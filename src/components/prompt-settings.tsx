@@ -32,6 +32,7 @@ import { Settings, RotateCcw, ChevronDown } from 'lucide-react';
 
 const PHASES: Array<{ key: keyof PromptSettings; defaultKey: keyof typeof DEFAULT_PROMPTS }> = [
   { key: 'extraction', defaultKey: 'extraction' },
+  { key: 'keyAlign', defaultKey: 'keyAlign' },
   { key: 'schemaAlign', defaultKey: 'schemaAlign' },
   { key: 'merge', defaultKey: 'merge' },
 ];
@@ -147,7 +148,7 @@ export default function PromptSettings() {
             <AlertDialogAction
               onClick={() => {
                 resetPromptSettings();
-                setLocalValues({ extraction: '', schemaAlign: '', merge: '' });
+                setLocalValues({ extraction: '', keyAlign: '', schemaAlign: '', merge: '' });
                 setShowResetConfirm(false);
               }}
             >

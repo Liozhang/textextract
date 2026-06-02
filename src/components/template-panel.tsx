@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useStore, type ColumnConstraint } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,15 +14,27 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Sparkles, Plus, Trash2, Loader2, SkipForward, Check } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import {
+  Sparkles,
+  Plus,
+  Trash2,
+  Loader2,
+  SkipForward,
+  Check,
+  Download,
+  Keyboard,
+} from 'lucide-react';
 
 interface TemplatePanelProps {
   /** Embedded mode: used inside review panel after extraction */
   embedded?: boolean;
   /** Extraction data for field-aware AI generation (embedded mode) */
-  extractionData?: Array<{ data?: Record<string, unknown> }>;
+  extractionData?: Array<{ fileId?: string; fileName?: string; data?: Record<string, unknown> }>;
+  /** Pre-filled keys from key normalization step */
+  prefilledKeys?: string[];
   /** Callback when user confirms template columns (embedded mode) */
-  onConfirm?: (columns: ColumnConstraint[]) => void;
+  onConfirm?: () => void;
   /** Callback when user skips template (embedded mode) */
   onSkip?: () => void;
 }
@@ -68,6 +80,7 @@ function inferType(value: string): 'string' | 'number' | 'boolean' {
 export default function TemplatePanel({
   embedded = false,
   extractionData,
+  prefilledKeys,
   onConfirm,
   onSkip,
 }: TemplatePanelProps) {
@@ -83,6 +96,59 @@ export default function TemplatePanel({
 
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
+  const [newKeyName, setNewKeyName] = useState('');
+
+  // All unique fields from extraction data (for import-all)
+  const allExtractedFields = useMemo(() => {
+    if (!extractionData) return [];
+    const fieldSet = new Set<string>();
+    for (const r of extractionData) {
+      if (r.data) {
+        for (const key of Object.keys(r.data)) {
+          fieldSet.add(key);
+        }
+      }
+    }
+    return Array.from(fieldSet);
+  }, [extractionData]);
+
+  // Auto-fill from prefilledKeys (normalized keys) on mount
+  const handleImportPrefilled = useCallback(() => {
+    if (!prefilledKeys || prefilledKeys.length === 0) return;
+    const existing = new Set(templateColumns.map((c) => c.key));
+    const toAdd = prefilledKeys
+      .filter((k) => !existing.has(k))
+      .map((key) => ({ key, type: 'string' as const, description: key, example: '' }));
+    if (toAdd.length > 0) {
+      setTemplateColumns([...templateColumns, ...toAdd]);
+      setTemplateGenerated(true);
+    }
+  }, [prefilledKeys, templateColumns, setTemplateColumns, setTemplateGenerated]);
+
+  // Auto-fill from all extracted fields
+  const handleImportAllFields = useCallback(() => {
+    const existing = new Set(templateColumns.map((c) => c.key));
+    const toAdd = allExtractedFields
+      .filter((k) => !existing.has(k))
+      .map((key) => ({ key, type: 'string' as const, description: key, example: '' }));
+    if (toAdd.length > 0) {
+      setTemplateColumns([...templateColumns, ...toAdd]);
+      setTemplateGenerated(true);
+    }
+  }, [allExtractedFields, templateColumns, setTemplateColumns, setTemplateGenerated]);
+
+  // Add single key manually
+  const handleAddKey = useCallback(() => {
+    const name = newKeyName.trim();
+    if (!name) return;
+    if (templateColumns.some((c) => c.key === name)) return;
+    setTemplateColumns([
+      ...templateColumns,
+      { key: name, type: 'string', description: name, example: '' },
+    ]);
+    setNewKeyName('');
+    setTemplateGenerated(true);
+  }, [newKeyName, templateColumns, setTemplateColumns, setTemplateGenerated]);
 
   const handleGenerate = useCallback(async () => {
     if (!templatePrompt.trim()) return;
@@ -173,7 +239,7 @@ export default function TemplatePanel({
 
   const handleConfirm = useCallback(() => {
     if (templateColumns.length > 0 && onConfirm) {
-      onConfirm(templateColumns);
+      onConfirm();
     }
   }, [templateColumns, onConfirm]);
 
@@ -183,8 +249,36 @@ export default function TemplatePanel({
     }
   }, [onSkip]);
 
+  // Build value preview: for each column key, collect values from all extraction results
+  const valuePreviewMap = useMemo(() => {
+    if (!extractionData) return {};
+    const map: Record<string, Array<{ fileName: string; value: unknown }>> = {};
+    for (const col of templateColumns) {
+      const entries: Array<{ fileName: string; value: unknown }> = [];
+      for (const r of extractionData) {
+        if (r.data && col.key in r.data) {
+          entries.push({
+            fileName: r.fileName || r.fileId || '?',
+            value: r.data[col.key],
+          });
+        }
+      }
+      if (entries.length > 0) {
+        map[col.key] = entries;
+      }
+    }
+    return map;
+  }, [extractionData, templateColumns]);
+
+  // Unique file count for value preview header
+  const previewFileCount = useMemo(() => {
+    if (!extractionData) return 0;
+    return new Set(extractionData.map((r) => r.fileId || r.fileName)).size;
+  }, [extractionData]);
+
   return (
     <div className="space-y-4">
+      {/* AI / Paste generation section */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -232,10 +326,85 @@ export default function TemplatePanel({
         </CardContent>
       </Card>
 
-      {/* Column table */}
+      {/* Manual key input section */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Keyboard className="size-4" />
+            {t('template.manualSection')}
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            {t('template.manualDesc')}
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {/* Single key input */}
+          <div className="flex gap-2">
+            <Input
+              className="h-8 flex-1"
+              placeholder={t('template.addKeyPlaceholder')}
+              value={newKeyName}
+              onChange={(e) => setNewKeyName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleAddKey();
+                }
+              }}
+            />
+            <Button variant="outline" size="sm" onClick={handleAddKey} disabled={!newKeyName.trim()}>
+              <Plus className="h-3.5 w-3.5 mr-1" />
+              {t('template.addKeyButton')}
+            </Button>
+          </div>
+
+          {/* Import buttons */}
+          <div className="flex gap-2 flex-wrap">
+            {prefilledKeys && prefilledKeys.length > 0 && (
+              <Button variant="outline" size="sm" onClick={handleImportPrefilled}>
+                <Download className="h-3.5 w-3.5 mr-1" />
+                {t('template.importFields')}
+                <span className="text-muted-foreground text-xs ml-1">
+                  ({prefilledKeys.length})
+                </span>
+              </Button>
+            )}
+            {allExtractedFields.length > 0 && (
+              <Button variant="outline" size="sm" onClick={handleImportAllFields}>
+                <Download className="h-3.5 w-3.5 mr-1" />
+                {t('template.importFields')}
+                <span className="text-muted-foreground text-xs ml-1">
+                  ({allExtractedFields.length})
+                </span>
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Empty state */}
+      {templateColumns.length === 0 && (
+        <p className="text-sm text-muted-foreground text-center py-4">
+          {t('template.emptyTemplate')}
+        </p>
+      )}
+
+      {/* Column table with value preview */}
       {templateColumns.length > 0 && (
         <Card>
           <CardContent>
+            {/* Pending entries header */}
+            {extractionData && extractionData.length > 0 && (
+              <div className="flex items-center gap-2 mb-3 text-sm text-muted-foreground">
+                <Badge variant="secondary" className="text-xs">
+                  {t('template.pendingEntries', { count: templateColumns.length })}
+                </Badge>
+                {previewFileCount > 0 && (
+                  <span className="text-xs">{t('template.pendingDesc')}</span>
+                )}
+              </div>
+            )}
+
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -244,70 +413,99 @@ export default function TemplatePanel({
                     <th className="pb-2 pr-2 w-[100px]">{t('template.type')}</th>
                     <th className="pb-2 pr-2 min-w-[200px]">{t('template.desc')}</th>
                     <th className="pb-2 pr-2 min-w-[120px]">{t('template.example')}</th>
+                    {/* Value preview column: only in embedded mode with data */}
+                    {embedded && extractionData && extractionData.length > 0 && (
+                      <th className="pb-2 pr-2 min-w-[200px]">
+                        {t('template.valuePreview', { count: previewFileCount })}
+                      </th>
+                    )}
                     <th className="pb-2 w-[40px]" />
                   </tr>
                 </thead>
                 <tbody>
-                  {templateColumns.map((col, idx) => (
-                    <tr key={idx} className="border-b last:border-0">
-                      <td className="py-1.5 pr-2">
-                        <Input
-                          value={col.key}
-                          onChange={(e) =>
-                            updateColumn(idx, { key: e.target.value })
-                          }
-                          className="h-8"
-                        />
-                      </td>
-                      <td className="py-1.5 pr-2">
-                        <Select
-                          value={col.type}
-                          onValueChange={(v) =>
-                            updateColumn(idx, {
-                              type: v as ColumnConstraint['type'],
-                            })
-                          }
-                        >
-                          <SelectTrigger className="h-8">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="string">string</SelectItem>
-                            <SelectItem value="number">number</SelectItem>
-                            <SelectItem value="boolean">boolean</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </td>
-                      <td className="py-1.5 pr-2">
-                        <Input
-                          value={col.description}
-                          onChange={(e) =>
-                            updateColumn(idx, { description: e.target.value })
-                          }
-                          className="h-8"
-                        />
-                      </td>
-                      <td className="py-1.5 pr-2">
-                        <Input
-                          value={col.example || ''}
-                          onChange={(e) =>
-                            updateColumn(idx, { example: e.target.value })
-                          }
-                          className="h-8"
-                        />
-                      </td>
-                      <td className="py-1.5">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive"
-                          onClick={() => removeColumn(idx)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
+                  {templateColumns.map((col, idx) => {
+                    const preview = valuePreviewMap[col.key];
+                    return (
+                      <tr key={idx} className="border-b last:border-0 hover:bg-muted/30">
+                        <td className="py-1.5 pr-2">
+                          <Input
+                            value={col.key}
+                            onChange={(e) =>
+                              updateColumn(idx, { key: e.target.value })
+                            }
+                            className="h-8"
+                          />
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <Select
+                            value={col.type}
+                            onValueChange={(v) =>
+                              updateColumn(idx, {
+                                type: v as ColumnConstraint['type'],
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-8">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="string">string</SelectItem>
+                              <SelectItem value="number">number</SelectItem>
+                              <SelectItem value="boolean">boolean</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <Input
+                            value={col.description}
+                            onChange={(e) =>
+                              updateColumn(idx, { description: e.target.value })
+                            }
+                            className="h-8"
+                          />
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <Input
+                            value={col.example || ''}
+                            onChange={(e) =>
+                              updateColumn(idx, { example: e.target.value })
+                            }
+                            className="h-8"
+                          />
+                        </td>
+                        {/* Value preview cells */}
+                        {embedded && extractionData && extractionData.length > 0 && (
+                          <td className="py-1.5 pr-2">
+                            {preview && preview.length > 0 ? (
+                              <div className="flex flex-col gap-0.5 max-h-[60px] overflow-y-auto text-xs">
+                                {preview.slice(0, 5).map((entry, i) => (
+                                  <div key={i} className="flex gap-1 truncate" title={`${entry.fileName}: ${String(entry.value)}`}>
+                                    <span className="text-muted-foreground shrink-0">{entry.fileName}:</span>
+                                    <span className="truncate">{entry.value != null ? String(entry.value) : t('template.noValue')}</span>
+                                  </div>
+                                ))}
+                                {preview.length > 5 && (
+                                  <span className="text-muted-foreground">+{preview.length - 5} more</span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">{t('template.noValue')}</span>
+                            )}
+                          </td>
+                        )}
+                        <td className="py-1.5">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-destructive hover:text-destructive"
+                            onClick={() => removeColumn(idx)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

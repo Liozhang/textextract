@@ -34,6 +34,8 @@ interface AlignMergeRequestBody {
     schemaAlign?: string
     merge?: string
   }
+  skipAlign?: boolean
+  fieldOrder?: string[]
 }
 
 // ─── Security: URL validation ────────────────────────────────────────────────
@@ -64,6 +66,12 @@ function isPrivateHost(url: string): boolean {
 
 function sseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+}
+
+function inferRule(type: string): 'leaf' | 'measurement' | 'join_comma' {
+  if (type === 'measurement') return 'measurement'
+  if (type === 'array') return 'join_comma'
+  return 'leaf'
 }
 
 // ─── Worker pool for concurrent merge processing ─────────────────────────
@@ -158,6 +166,8 @@ export async function POST(request: NextRequest) {
       groups,
       columns: templateColumns,
       prompts: customPrompts,
+      skipAlign,
+      fieldOrder: preAlignedOrder,
     } = body
 
     if (!extractionData || extractionData.length === 0) {
@@ -227,12 +237,22 @@ export async function POST(request: NextRequest) {
           const fieldPaths = collectFieldPaths(extractionData)
           let schema
           let schemaAiFailed = false
-          try {
-            schema = await alignSchemaWithAI(openai, apiSettings.model, fieldPaths, abortController.signal, schemaAlignPrompt, perCallTimeout)
-          } catch (alignError) {
-            console.error('[align-merge] AI schema alignment failed:', alignError instanceof Error ? alignError.message : alignError)
-            schema = alignSchema(fieldPaths)
-            schemaAiFailed = true
+
+          if (skipAlign) {
+            // Pre-aligned: build identity schema from field paths
+            schema = {
+              field_mapping: Object.fromEntries(fieldPaths.map((fp) => [fp.path, fp.path])),
+              field_order: preAlignedOrder || fieldPaths.map((fp) => fp.path),
+              flatten_rules: Object.fromEntries(fieldPaths.map((fp) => [fp.path, inferRule(fp.type)])),
+            }
+          } else {
+            try {
+              schema = await alignSchemaWithAI(openai, apiSettings.model, fieldPaths, abortController.signal, schemaAlignPrompt, perCallTimeout)
+            } catch (alignError) {
+              console.error('[align-merge] AI schema alignment failed:', alignError instanceof Error ? alignError.message : alignError)
+              schema = alignSchema(fieldPaths)
+              schemaAiFailed = true
+            }
           }
 
           // If template columns are provided, prioritize them in field_order

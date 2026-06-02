@@ -7,7 +7,7 @@ import { detectLocale, type Locale } from './i18n';
 // Types
 // ---------------------------------------------------------------------------
 
-export type WizardStep = 'upload' | 'extract' | 'template' | 'export';
+export type WizardStep = 'upload' | 'extract' | 'merge_keys' | 'template' | 'export';
 
 export interface ColumnConstraint {
   key: string;
@@ -44,7 +44,7 @@ export interface ExtractionResultItem {
   error?: string;
 }
 
-export type ExtractionStatus = 'idle' | 'extracting' | 'extraction_done' | 'aligning_merging' | 'done' | 'error';
+export type ExtractionStatus = 'idle' | 'extracting' | 'extraction_done' | 'keys_aligning' | 'keys_aligned' | 'aligning_merging' | 'done' | 'error';
 
 export interface ExtractionProgress {
   totalFiles: number;
@@ -61,6 +61,7 @@ export interface ExportSettings {
 
 export interface PromptSettings {
   extraction: string;
+  keyAlign: string;
   schemaAlign: string;
   merge: string;
 }
@@ -138,6 +139,15 @@ export interface AppState {
   setExtractionSnapshot: (snapshot: AppState['extractionSnapshot']) => void;
   clearExtractionSnapshot: () => void;
 
+  // Key alignment result (transient, not persisted)
+  keyAlignmentResult: {
+    fieldMapping: Record<string, string>;
+    fieldOrder: string[];
+    aiFailed: boolean;
+  } | null;
+  setKeyAlignmentResult: (result: AppState['keyAlignmentResult']) => void;
+  clearKeyAlignmentResult: () => void;
+
   // Merged export data (synced from review panel after backend pipeline)
   mergedExportData: MergedExportRow[];
   setMergedExportData: (rows: MergedExportRow[]) => void;
@@ -163,6 +173,7 @@ const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
 
 const DEFAULT_PROMPT_SETTINGS: PromptSettings = {
   extraction: '',
+  keyAlign: '',
   schemaAlign: '',
   merge: '',
 };
@@ -251,6 +262,11 @@ export const useStore = create<AppState>()(
       setExtractionSnapshot: (snapshot) => set({ extractionSnapshot: snapshot }),
       clearExtractionSnapshot: () => set({ extractionSnapshot: null }),
 
+      // --- Key Alignment Result (transient) ---
+      keyAlignmentResult: null,
+      setKeyAlignmentResult: (result) => set({ keyAlignmentResult: result }),
+      clearKeyAlignmentResult: () => set({ keyAlignmentResult: null }),
+
       // --- Merged export data ---
       mergedExportData: [],
       setMergedExportData: (rows) => set({ mergedExportData: rows }),
@@ -274,13 +290,14 @@ export const useStore = create<AppState>()(
           templatePrompt: '',
           templateGenerated: false,
           extractionSnapshot: null,
+          keyAlignmentResult: null,
           selectedField: null,
           selectedFileId: null,
           mergedExportData: [],
         }),
     }),
     {
-      name: 'ai-doc-extraction-store',
+      name: 'message-extract-store',
       storage: createJSONStorage(() => {
         // Avoid referencing localStorage during SSR
         if (typeof window === 'undefined') {

@@ -19,7 +19,7 @@ export interface SessionData {
   createdAt: number
 }
 
-const DB_NAME = 'ocr-extract'
+const DB_NAME = 'message-extract'
 const DB_VERSION = 1
 const STORE_NAME = 'sessions'
 
