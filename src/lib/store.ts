@@ -7,7 +7,7 @@ import { detectLocale, type Locale } from './i18n';
 // Types
 // ---------------------------------------------------------------------------
 
-export type WizardStep = 'upload' | 'review' | 'export';
+export type WizardStep = 'upload' | 'extract' | 'template' | 'export';
 
 export interface ColumnConstraint {
   key: string;
