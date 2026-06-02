@@ -60,9 +60,9 @@ function detectHeaders(text: string): string[] | null {
     return firstLine.split(',').map((h) => h.trim()).filter(Boolean);
   }
 
-  // Single line with space-separated values (3+ items)
+  // Single line with space-separated values (3+ items, only when single line)
   const spaceParts = firstLine.split(/\s+/).filter(Boolean);
-  if (spaceParts.length >= 3 && spaceParts.length <= 30) {
+  if (lines.length === 1 && spaceParts.length >= 3 && spaceParts.length <= 15) {
     return spaceParts;
   }
 
@@ -175,34 +175,62 @@ export default function TemplatePanel({
     setGenerating(true);
     setError('');
 
-    // First line detection: if pasted text looks like tabular headers, parse directly
-    const detectedHeaders = detectHeaders(templatePrompt);
+    try {
+      // First line detection: if pasted text looks like tabular headers, parse directly
+      const detectedHeaders = detectHeaders(templatePrompt);
 
-    if (detectedHeaders && detectedHeaders.length >= 2) {
-      // Parse second line as example values if available
-      const lines = templatePrompt.trim().split(/\r?\n/).filter((l) => l.trim());
-      let exampleRow: string[] = [];
-      if (lines.length >= 2) {
-        const sep = lines[0].includes('\t') ? '\t' : ',';
-        exampleRow = lines[1].split(sep).map((v) => v.trim()).filter(Boolean);
+      if (detectedHeaders && detectedHeaders.length >= 2) {
+        // Parse second line as example values if available
+        const lines = templatePrompt.trim().split(/\r?\n/).filter((l) => l.trim());
+        let exampleRow: string[] = [];
+        if (lines.length >= 2) {
+          const sep = lines[0].includes('\t') ? '\t' : ',';
+          exampleRow = lines[1].split(sep).map((v) => v.trim()).filter(Boolean);
+        }
+
+        const columns: ColumnConstraint[] = detectedHeaders.map((header, idx) => ({
+          key: header,
+          type: idx < exampleRow.length ? inferType(exampleRow[idx]) : 'string',
+          description: header,
+          example: idx < exampleRow.length ? exampleRow[idx] : '',
+        }));
+
+        setTemplateColumns(columns);
+        setTemplatePrompt('');
+        setTemplateGenerated(true);
+        return;
       }
 
-      const columns: ColumnConstraint[] = detectedHeaders.map((header, idx) => ({
-        key: header,
-        type: idx < exampleRow.length ? inferType(exampleRow[idx]) : 'string',
-        description: header,
-        example: idx < exampleRow.length ? exampleRow[idx] : '',
-      }));
+      // Not tabular data — check for simple key list before calling AI
+      const simpleLines = templatePrompt.trim().split(/\r?\n/).filter((l) => l.trim());
+      const singleLineText = simpleLines.length === 1 ? simpleLines[0].trim() : null;
 
-      setTemplateColumns(columns);
-      setTemplatePrompt('');
-      setTemplateGenerated(true);
-      setGenerating(false);
-      return;
-    }
+      // Single line, single token (no separator): e.g. "姓名"
+      if (singleLineText && !/[\t,\s]/.test(singleLineText)) {
+        setTemplateColumns([{ key: singleLineText, type: 'string', description: singleLineText, example: '' }]);
+        setTemplatePrompt('');
+        setTemplateGenerated(true);
+        return;
+      }
 
-    // Not tabular data — call AI to generate columns from description
-    try {
+      // Multi-line, each line a single token (no tab/comma): e.g. "姓名\n年龄\n电话"
+      if (simpleLines.length >= 2 && simpleLines.every((l) => !/[\t,]/.test(l.trim()) && l.trim().length > 0)) {
+        const seen = new Set<string>();
+        const columns: ColumnConstraint[] = [];
+        for (const l of simpleLines) {
+          const key = l.trim();
+          if (!seen.has(key)) {
+            seen.add(key);
+            columns.push({ key, type: 'string', description: key, example: '' });
+          }
+        }
+        setTemplateColumns(columns);
+        setTemplatePrompt('');
+        setTemplateGenerated(true);
+        return;
+      }
+
+      // Complex description — call AI to generate columns
       const res = await fetch('/api/generate-template', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -210,12 +238,13 @@ export default function TemplatePanel({
           prompt: templatePrompt.trim(),
           files: files.map((f) => ({ name: f.name })),
           extractionData: extractionData || undefined,
+          apiSettings: useStore.getState().apiSettings,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error || '生成失败');
+        setError(data.error || t('review.unknownError'));
         return;
       }
 
@@ -224,10 +253,10 @@ export default function TemplatePanel({
         setTemplatePrompt('');
         setTemplateGenerated(true);
       } else {
-        setError('未能生成模板列，请尝试更明确的描述或直接粘贴表头行');
+        setError(t('template.emptyTemplate'));
       }
     } catch {
-      setError('网络请求失败');
+      setError(t('review.streamError'));
     } finally {
       setGenerating(false);
     }
@@ -467,7 +496,7 @@ export default function TemplatePanel({
                   {templateColumns.map((col, idx) => {
                     const preview = valuePreviewMap[col.key];
                     return (
-                      <tr key={idx} className="border-b last:border-0 hover:bg-muted/30">
+                      <tr key={col.key || idx} className="border-b last:border-0 hover:bg-muted/30">
                         <td className="py-1.5 pr-2">
                           <Input
                             value={col.key}

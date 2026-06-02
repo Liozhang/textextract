@@ -11,7 +11,7 @@ import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
  * Filter suspicious keys from AI merge output.
  */
 const SUSPICIOUS_KEY_PATTERNS = [
-  /^(system_prompt|instructions|task|_meta|merged|conflicts)$/i,
+  /^(system_prompt|instructions|task|_meta|merged|entries|conflicts)$/i,
   /^(please|note|remember|warning|important|hint|tip)\b/i,
 ];
 
@@ -29,9 +29,22 @@ function filterSuspiciousKeys(
 }
 
 /**
+ * Enforce template columns: only keep template keys, fill missing with null.
+ */
+function enforceTemplateColumns(
+  data: Record<string, unknown>,
+  columns: Array<{ key: string }>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const col of columns) {
+    result[col.key] = col.key in data ? data[col.key] : null;
+  }
+  return result;
+}
+
+/**
  * Merge a group of aligned extraction results using AI.
- * Input: AlignedPerFileResult[] (fields already normalized and flattened).
- * Returns a MergedRecord with mergeMethod = 'ai'.
+ * Returns an array of MergedRecords (supports multi-entry output).
  */
 export async function mergeGroupWithAI(
   openai: OpenAI,
@@ -42,8 +55,8 @@ export async function mergeGroupWithAI(
   abortSignal: AbortSignal,
   customSystemPrompt?: string,
   templateColumns?: Array<{ key: string; description?: string }>,
-): Promise<MergedRecord> {
-  // Prepare source data (data is Record<string, string> but buildMergeUserMessage accepts Record<string, unknown>)
+): Promise<MergedRecord[]> {
+  // Prepare source data
   const sourceData = successfulResults.map((r) => ({
     fileName: r.fileName,
     data: r.data! as Record<string, unknown>,
@@ -81,14 +94,13 @@ export async function mergeGroupWithAI(
 
   const parsed = parseJsonResponse(content);
 
-  let mergedData: Record<string, unknown> = {};
   const conflicts: ConflictInfo[] = [];
+  const entries: Array<Record<string, unknown>> = [];
 
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     const obj = parsed as Record<string, unknown>;
-    if (obj.merged && typeof obj.merged === 'object') {
-      mergedData = obj.merged as Record<string, unknown>;
-    }
+
+    // Parse conflicts
     if (Array.isArray(obj.conflicts)) {
       for (const c of obj.conflicts) {
         const conflict = c as Record<string, unknown>;
@@ -102,29 +114,55 @@ export async function mergeGroupWithAI(
         }
       }
     }
-    if (!obj.merged && !('conflicts' in obj)) {
-      mergedData = obj;
+
+    // New format: entries array (takes priority)
+    if (Array.isArray(obj.entries)) {
+      for (const entry of obj.entries) {
+        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+          entries.push(entry as Record<string, unknown>);
+        }
+      }
+    }
+    // Backward compat: merged object
+    else if (obj.merged && typeof obj.merged === 'object') {
+      entries.push(obj.merged as Record<string, unknown>);
+    }
+    // Backward compat: plain object is the merged data
+    else if (!('conflicts' in obj)) {
+      entries.push(obj);
     }
   }
 
-  mergedData = filterSuspiciousKeys(mergedData);
-
-  // Convert all merged values to strings for consistency
-  const stringData: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(mergedData)) {
-    stringData[k] = v != null ? String(v) : '';
+  // Fallback: if nothing parsed, create empty entry
+  if (entries.length === 0) {
+    entries.push({});
   }
 
   const primaryResult = successfulResults.find((r) => r.imageDataUrl);
 
-  return {
-    groupId,
-    groupKey,
-    data: stringData,
-    imageDataUrl: primaryResult?.imageDataUrl,
-    sourceFileNames: successfulResults.map((r) => r.fileName),
-    mergedCount: successfulResults.length,
-    mergeMethod: 'ai',
-    conflicts,
-  };
+  return entries.map((entry) => {
+    let data = filterSuspiciousKeys(entry);
+
+    // Enforce template columns if provided
+    if (templateColumns && templateColumns.length > 0) {
+      data = enforceTemplateColumns(data, templateColumns);
+    }
+
+    // Convert all values to strings for consistency
+    const stringData: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(data)) {
+      stringData[k] = v != null ? String(v) : '';
+    }
+
+    return {
+      groupId,
+      groupKey,
+      data: stringData,
+      imageDataUrl: primaryResult?.imageDataUrl,
+      sourceFileNames: successfulResults.map((r) => r.fileName),
+      mergedCount: successfulResults.length,
+      mergeMethod: 'ai' as const,
+      conflicts,
+    };
+  });
 }

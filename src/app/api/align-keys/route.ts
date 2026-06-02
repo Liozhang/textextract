@@ -10,7 +10,7 @@ import {
 import { KEY_ALIGN_SYSTEM_MESSAGE } from '@/lib/pipeline/prompts'
 import { parseJsonResponse } from '@/lib/pipeline/json-parser'
 import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
-import { isPrivateHost, sseEvent, workerPool } from '@/lib/api-utils'
+import { isPrivateHost, sseEvent, workerPool, resolveApiSettings } from '@/lib/api-utils'
 import type { PerFileResult, FieldPathInfo, FlattenedSchema, FlattenRule } from '@/lib/pipeline/types'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -21,6 +21,11 @@ interface AlignKeysRequestBody {
   referenceText?: string
   prompts?: {
     keyAlign?: string
+  }
+  apiSettings?: {
+    baseUrl?: string
+    apiKey?: string
+    model?: string
   }
 }
 
@@ -96,7 +101,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body: AlignKeysRequestBody = await request.json()
-    const { extractionData, referenceKeys, referenceText, prompts: customPrompts } = body
+    const { extractionData, referenceKeys, referenceText, prompts: customPrompts, apiSettings: apiSettingsOverride } = body
 
     if (!extractionData || extractionData.length === 0) {
       return new Response(JSON.stringify({ error: 'No extraction data' }), {
@@ -105,25 +110,23 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    const baseUrl = (process.env.API_BASE_URL || '').trim()
-    const apiKey = (process.env.API_KEY || '').trim()
-    const model = (process.env.API_MODEL || '').trim()
+    const apiSettings = resolveApiSettings(apiSettingsOverride)
 
-    if (!baseUrl || !apiKey || !model) {
+    if (!apiSettings.baseUrl || !apiSettings.apiKey || !apiSettings.model) {
       return new Response(JSON.stringify({ error: 'API settings incomplete' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       })
     }
 
-    if (isPrivateHost(baseUrl)) {
+    if (isPrivateHost(apiSettings.baseUrl)) {
       return new Response(JSON.stringify({ error: 'Private host not allowed' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       })
     }
 
-    const openai = new OpenAI({ baseURL: baseUrl, apiKey })
+    const openai = new OpenAI({ baseURL: apiSettings.baseUrl, apiKey: apiSettings.apiKey })
     const effectivePrompt = customPrompts?.keyAlign || KEY_ALIGN_SYSTEM_MESSAGE
     const baseTimeout = Number(process.env.API_TIMEOUT) || 120_000
     const perCallTimeout = Math.min(600_000, baseTimeout)
@@ -182,7 +185,7 @@ export async function POST(request: NextRequest) {
               }
 
               const requestOptions: Record<string, unknown> = {
-                model,
+                model: apiSettings.model,
                 messages: [
                   { role: 'system', content: effectivePrompt },
                   { role: 'user', content: userMessage },
@@ -191,11 +194,11 @@ export async function POST(request: NextRequest) {
                 stream: false,
               }
 
-              if (supportsJsonResponseFormat(model)) {
+              if (supportsJsonResponseFormat(apiSettings.model)) {
                 requestOptions.response_format = { type: 'json_object' }
               }
 
-              if (isReasoningModel(model)) {
+              if (isReasoningModel(apiSettings.model)) {
                 requestOptions.reasoning_effort = 'low'
               }
 

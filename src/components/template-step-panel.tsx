@@ -181,6 +181,7 @@ export default function TemplateStepPanel() {
       prompts: {
         merge: currentPromptSettings.merge || undefined,
       },
+      apiSettings: useStore.getState().apiSettings,
     };
 
     const controller = new AbortController();
@@ -376,7 +377,7 @@ export default function TemplateStepPanel() {
         {/* ---------- Extraction context (collapsible, default closed) ---------- */}
         {(isExtractionDone || isDone || isAligning) && extractionSummary && (
           <Card>
-            <Collapsible>
+            <Collapsible defaultOpen>
               <CollapsibleTrigger className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium hover:bg-muted/50 rounded-t-md">
                 <CheckCircle2 className="text-emerald-600 size-4" />
                 <span className="font-semibold">{t('review.extractionComplete')}</span>

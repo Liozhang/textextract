@@ -2,6 +2,28 @@
 // Shared utilities for API routes
 // ---------------------------------------------------------------------------
 
+// ─── API settings ────────────────────────────────────────────────────────
+
+export interface ApiSettingsResolved {
+  baseUrl: string
+  apiKey: string
+  model: string
+}
+
+/**
+ * Resolve API settings from request body overrides (user-provided) with
+ * environment variables as fallback.
+ */
+export function resolveApiSettings(
+  overrides?: { baseUrl?: string; apiKey?: string; model?: string } | null,
+): ApiSettingsResolved {
+  return {
+    baseUrl: (overrides?.baseUrl || process.env.API_BASE_URL || '').trim(),
+    apiKey: (overrides?.apiKey || process.env.API_KEY || '').trim(),
+    model: (overrides?.model || process.env.API_MODEL || '').trim(),
+  }
+}
+
 // ─── Security: URL validation ────────────────────────────────────────────
 
 const PRIVATE_HOSTS = [

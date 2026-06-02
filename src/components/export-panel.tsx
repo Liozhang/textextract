@@ -7,8 +7,9 @@ import {
   FileText,
   Braces,
   Download,
-  ChevronDown,
-  Settings2,
+  Loader2,
+  ArrowLeft,
+  AlertCircle,
 } from 'lucide-react'
 import { useStore, type ExportFormat, type MergedExportRow } from '@/lib/store'
 import { useT } from '@/lib/i18n'
@@ -34,11 +35,6 @@ import {
   TableRow,
   TableCell,
 } from '@/components/ui/table'
-import {
-  Collapsible,
-  CollapsibleTrigger,
-  CollapsibleContent,
-} from '@/components/ui/collapsible'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,7 +52,7 @@ interface FormatOption {
 // ---------------------------------------------------------------------------
 
 function getDefaultFilename(): string {
-  return `extraction-result-${Date.now()}`
+  return `extraction-result-${new Date().toISOString().slice(0, 10)}`
 }
 
 function getExtension(format: ExportFormat): string {
@@ -104,10 +100,10 @@ export default function ExportPanel() {
   const mergedExportData = useStore((s) => s.mergedExportData)
   const exportFormat = useStore((s) => s.exportSettings.format)
   const setExportSettings = useStore((s) => s.setExportSettings)
+  const setStep = useStore((s) => s.setStep)
 
   const [filename, setFilename] = useState<string>(getDefaultFilename)
   const [exporting, setExporting] = useState(false)
-  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [onlySuccess, setOnlySuccess] = useState(true)
 
   // Format options — inside the component so t() is available for descriptions
@@ -286,7 +282,7 @@ export default function ExportPanel() {
               </span>
             </div>
 
-            <div className="max-h-48 overflow-y-auto rounded-lg border">
+            <div className="max-h-48 overflow-auto rounded-lg border">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -330,38 +326,20 @@ export default function ExportPanel() {
           </div>
         )}
 
-        {/* ── Advanced options ─────────────────────────────────────────── */}
-        <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-          <CollapsibleTrigger asChild>
-            <button
-              type="button"
-              className="flex w-full items-center justify-between rounded-md py-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <span className="flex items-center gap-2">
-                <Settings2 className="size-4" />
-                {t('export.advanced')}
-              </span>
-              <ChevronDown
-                className={`size-4 transition-transform ${advancedOpen ? 'rotate-180' : ''}`}
-              />
-            </button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-3 flex flex-col gap-4 rounded-lg border p-4">
-            <div className="flex items-center gap-3">
-              <Checkbox
-                id="only-success"
-                checked={onlySuccess}
-                onCheckedChange={(v) => setOnlySuccess(v === true)}
-              />
-              <Label htmlFor="only-success" className="cursor-pointer">
-                {t('export.onlySuccess')}
-              </Label>
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
+        {/* ── Filter options ─────────────────────────────────────────── */}
+        <div className="flex items-center gap-3 rounded-lg border p-4">
+          <Checkbox
+            id="only-success"
+            checked={onlySuccess}
+            onCheckedChange={(v) => setOnlySuccess(v === true)}
+          />
+          <Label htmlFor="only-success" className="cursor-pointer">
+            {t('export.onlySuccess')}
+          </Label>
+        </div>
       </CardContent>
 
-      <CardFooter>
+      <CardFooter className="flex flex-col gap-3">
         <Button
           size="lg"
           className="w-full"
@@ -370,7 +348,7 @@ export default function ExportPanel() {
         >
           {exporting ? (
             <>
-              <span className="size-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+              <Loader2 className="size-4 animate-spin" />
               {t('export.exporting')}
             </>
           ) : (
@@ -380,6 +358,18 @@ export default function ExportPanel() {
             </>
           )}
         </Button>
+        {!hasResults && (
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed p-4">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <AlertCircle className="size-4 shrink-0" />
+              <span>{t('export.noDataHint')}</span>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => setStep('template')}>
+              <ArrowLeft className="size-4 mr-1" />
+              {t('export.goToTemplate')}
+            </Button>
+          </div>
+        )}
       </CardFooter>
     </Card>
   )

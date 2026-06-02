@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useStore } from '@/lib/store';
 import { useHydrated } from '@/lib/store';
 import { useT } from '@/lib/i18n';
@@ -52,6 +52,13 @@ export default function Home() {
 
   const [showResetDialog, setShowResetDialog] = useState(false);
 
+  const locale = useStore((s) => s.locale);
+
+  // Sync html lang attribute with locale
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
   // Prevent hydration mismatch - show nothing until store is hydrated
   if (!hydrated) {
     return (
@@ -102,7 +109,7 @@ export default function Home() {
     <main className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="mb-8 flex items-start justify-between">
-        <div className="text-center flex-1">
+        <div className="flex-1">
           <h1 className="text-3xl font-bold tracking-tight">
             {t('app.title')}
           </h1>
@@ -132,7 +139,7 @@ export default function Home() {
               const Icon = s.icon;
               const isActive = s.key === step;
               const completed = isStepCompleted(s.key);
-              const clickable = idx <= currentStepIndex || isStepCompleted(s.key);
+              const clickable = (idx <= currentStepIndex || isStepCompleted(s.key)) && !isPipelineActive;
 
               return (
                 <div key={s.key} className="flex items-center flex-1 last:flex-none">

@@ -7,7 +7,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 
 import { parseJsonResponse } from '@/lib/pipeline/json-parser'
-import { isPrivateHost, sseEvent, workerPool } from '@/lib/api-utils'
+import { isPrivateHost, sseEvent, workerPool, resolveApiSettings } from '@/lib/api-utils'
 
 export const maxDuration = 300
 import { groupFilesByPrefix, findGroupForFile } from '@/lib/pipeline/file-grouper'
@@ -45,6 +45,11 @@ interface ExtractRequestBody {
   imageCompressThreshold?: number
   prompts?: {
     extraction?: string
+  }
+  apiSettings?: {
+    baseUrl?: string
+    apiKey?: string
+    model?: string
   }
 }
 
@@ -229,11 +234,12 @@ export async function POST(request: NextRequest) {
     }
     const perCallTimeout = Math.min(600_000, baseTimeout + Math.ceil(bodySizeMB * 15_000))
 
-    // All model settings from .env (trim to avoid whitespace issues)
+    // All model settings from .env, overridden by user-provided settings
+    const resolved = resolveApiSettings(body.apiSettings)
     const apiSettings: ApiSettings = {
-      baseUrl: (process.env.API_BASE_URL || '').trim(),
-      apiKey: (process.env.API_KEY || '').trim(),
-      model: (process.env.API_MODEL || '').trim(),
+      baseUrl: resolved.baseUrl,
+      apiKey: resolved.apiKey,
+      model: resolved.model,
       temperature: Number(process.env.API_TEMPERATURE) || 0.3,
     }
 

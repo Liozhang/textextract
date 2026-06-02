@@ -10,6 +10,7 @@ import {
   SkipForward,
   ArrowRight,
   RotateCcw,
+  Search,
 } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
@@ -23,6 +24,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -36,27 +38,32 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { consumeSSEStream } from '@/lib/pipeline-helpers';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { consumeSSEStream, PhaseIndicator, type PipelinePhase } from '@/lib/pipeline-helpers';
 
 // ---------------------------------------------------------------------------
-// Phase type for this panel
+// Phase constants
 // ---------------------------------------------------------------------------
 
-interface AlignPhase {
-  key: string;
-  status: 'pending' | 'active' | 'done';
-}
-
-const INIT_PHASES: AlignPhase[] = [
-  { key: 'collecting', status: 'active' },
-  { key: 'aligning', status: 'pending' },
-  { key: 'applying', status: 'pending' },
+const INIT_PHASES: PipelinePhase[] = [
+  { key: 'collecting', status: 'active', detail: '' },
+  { key: 'aligning', status: 'pending', detail: '' },
+  { key: 'applying', status: 'pending', detail: '' },
 ];
 
-const ALL_DONE_PHASES: AlignPhase[] = [
-  { key: 'collecting', status: 'done' },
-  { key: 'aligning', status: 'done' },
-  { key: 'applying', status: 'done' },
+const ALL_DONE_PHASES: PipelinePhase[] = [
+  { key: 'collecting', status: 'done', detail: '' },
+  { key: 'aligning', status: 'done', detail: '' },
+  { key: 'applying', status: 'done', detail: '' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -76,10 +83,12 @@ export default function MergeKeysPanel() {
 
   const abortRef = useRef<AbortController | null>(null);
 
-  const [phases, setPhases] = useState<AlignPhase[]>([...INIT_PHASES]);
+  const [phases, setPhases] = useState<PipelinePhase[]>([...INIT_PHASES]);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [referenceText, setReferenceText] = useState('');
   const [error, setError] = useState('');
+  const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
+  const [mappingSearch, setMappingSearch] = useState('');
 
   const isAligning = progress.status === 'keys_aligning';
   const isAligned = progress.status === 'keys_aligned' && keyAlignmentResult !== null;
@@ -155,6 +164,7 @@ export default function MergeKeysPanel() {
         prompts: {
           keyAlign: useStore.getState().promptSettings.keyAlign || undefined,
         },
+        apiSettings: useStore.getState().apiSettings,
       };
 
       const response = await fetch('/api/align-keys', {
@@ -254,6 +264,12 @@ export default function MergeKeysPanel() {
 
   // Handle skip
   const handleSkip = useCallback(() => {
+    setSkipConfirmOpen(true);
+  }, []);
+
+  // Handle confirmed skip
+  const handleConfirmSkip = useCallback(() => {
+    setSkipConfirmOpen(false);
     clearKeyAlignmentResult();
     setStep('template');
   }, [clearKeyAlignmentResult, setStep]);
@@ -290,10 +306,21 @@ export default function MergeKeysPanel() {
         grouped.set(canonical, existing);
       }
     }
-    return Array.from(grouped.entries())
+    let entries = Array.from(grouped.entries())
       .map(([canonical, originals]) => ({ canonical, originals }))
       .sort((a, b) => a.canonical.localeCompare(b.canonical));
-  }, [keyAlignmentResult]);
+
+    if (mappingSearch.trim()) {
+      const q = mappingSearch.trim().toLowerCase();
+      entries = entries.filter(
+        ({ canonical, originals }) =>
+          canonical.toLowerCase().includes(q) ||
+          originals.some((o) => o.toLowerCase().includes(q)),
+      );
+    }
+
+    return entries;
+  }, [keyAlignmentResult, mappingSearch]);
 
   // Cleanup
   useEffect(() => {
@@ -323,7 +350,7 @@ export default function MergeKeysPanel() {
 
         {/* ---------- Extraction summary ---------- */}
         {extractionSummary && (
-          <Collapsible>
+          <Collapsible defaultOpen>
             <CollapsibleTrigger className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium hover:bg-muted/50 rounded-t-md">
               <CheckCircle2 className="text-emerald-600 size-4" />
               <span className="font-semibold">{t('review.extractionComplete')}</span>
@@ -413,33 +440,7 @@ export default function MergeKeysPanel() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="pt-0">
-                <div className="flex items-center gap-4">
-                  {phases.map((phase) => (
-                    <div key={phase.key} className="flex items-center gap-2">
-                      <div
-                        className={`flex items-center justify-center rounded-full ${
-                          phase.status === 'done'
-                            ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/20'
-                            : phase.status === 'active'
-                              ? 'bg-primary/10 text-primary'
-                              : 'bg-muted text-muted-foreground'
-                        }`}
-                        style={{ width: 28, height: 28 }}
-                      >
-                        {phase.status === 'done' ? (
-                          <CheckCircle2 className="size-4" />
-                        ) : phase.status === 'active' ? (
-                          <Loader2 className="size-4 animate-spin" />
-                        ) : (
-                          <div className="size-2 rounded-full bg-current" />
-                        )}
-                      </div>
-                      <span className="text-sm">
-                        {t(`mergeKeys.phase${phase.key.charAt(0).toUpperCase() + phase.key.slice(1)}`)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                <PhaseIndicator phases={phases} />
               </CardContent>
             </Card>
             <Button variant="destructive" onClick={handleAbort}>
@@ -471,36 +472,53 @@ export default function MergeKeysPanel() {
             </div>
 
             {/* Mapping table (only changed entries) */}
-            {mappingEntries.length > 0 ? (
+            {mappingEntries.length > 0 || keyAlignmentResult.fieldOrder.length > 0 ? (
               <Card>
                 <CardContent className="pt-4">
-                  <h4 className="text-sm font-medium mb-3">{t('mergeKeys.mappingTable')}</h4>
-                  <div className="max-h-[40vh] overflow-auto rounded-md border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>{t('mergeKeys.canonicalKey')}</TableHead>
-                          <TableHead>{t('mergeKeys.originalKey')}</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {mappingEntries.map(({ canonical, originals }) => (
-                          <TableRow key={canonical}>
-                            <TableCell className="font-medium">{canonical}</TableCell>
-                            <TableCell>
-                              <div className="flex flex-wrap gap-1">
-                                {originals.map((orig) => (
-                                  <Badge key={orig} variant="secondary" className="text-xs">
-                                    {orig}
-                                  </Badge>
-                                ))}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-medium">{t('mergeKeys.mappingTable')}</h4>
                   </div>
+                  <div className="relative mb-3">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+                    <Input
+                      className="pl-8 h-9"
+                      placeholder={t('mergeKeys.searchMapping')}
+                      value={mappingSearch}
+                      onChange={(e) => setMappingSearch(e.target.value)}
+                    />
+                  </div>
+                  {mappingEntries.length > 0 ? (
+                    <div className="max-h-[40vh] overflow-auto rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>{t('mergeKeys.canonicalKey')}</TableHead>
+                            <TableHead>{t('mergeKeys.originalKey')}</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {mappingEntries.map(({ canonical, originals }) => (
+                            <TableRow key={canonical}>
+                              <TableCell className="font-medium">{canonical}</TableCell>
+                              <TableCell>
+                                <div className="flex flex-wrap gap-1">
+                                  {originals.map((orig) => (
+                                    <Badge key={orig} variant="secondary" className="text-xs">
+                                      {orig}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      {mappingSearch.trim() ? t('mergeKeys.noSearchResults') : t('mergeKeys.noMapping')}
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             ) : (
@@ -525,6 +543,24 @@ export default function MergeKeysPanel() {
           </div>
         )}
       </CardContent>
+
+      {/* Skip confirmation dialog */}
+      <AlertDialog open={skipConfirmOpen} onOpenChange={setSkipConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('mergeKeys.skipConfirmTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('mergeKeys.skipConfirmDesc')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmSkip}>
+              {t('mergeKeys.skipConfirmAction')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

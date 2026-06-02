@@ -11,6 +11,7 @@ import {
   FileSearch,
   Loader2,
   Eye,
+  X,
 } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
@@ -62,6 +63,7 @@ export default function ExtractionPanel() {
   const setProgress = useStore((s) => s.setProgress);
   const setMergedExportData = useStore((s) => s.setMergedExportData);
   const promptSettings = useStore((s) => s.promptSettings);
+  const apiSettings = useStore((s) => s.apiSettings);
   const extractionSnapshot = useStore((s) => s.extractionSnapshot);
   const setExtractionSnapshot = useStore((s) => s.setExtractionSnapshot);
   const clearKeyAlignmentResult = useStore((s) => s.clearKeyAlignmentResult);
@@ -71,6 +73,16 @@ export default function ExtractionPanel() {
   const abortRef = useRef<AbortController | null>(null);
   const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set());
   const [previewResult, setPreviewResult] = useState<{ fileId: string; fileName: string; data: Record<string, unknown>; imageDataUrl?: string } | null>(null);
+  // Close preview on Escape key
+  useEffect(() => {
+    if (!previewResult) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPreviewResult(null);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [previewResult]);
+
   const [hasExtracted, setHasExtracted] = useState(
     progress.status === 'extraction_done' || progress.status === 'done' || progress.status === 'aligning_merging',
   );
@@ -192,6 +204,11 @@ export default function ExtractionPanel() {
           })),
           prompts: {
             extraction: promptSettings.extraction || undefined,
+          },
+          apiSettings: {
+            baseUrl: apiSettings.baseUrl || undefined,
+            apiKey: apiSettings.apiKey || undefined,
+            model: apiSettings.model || undefined,
           },
         };
 
@@ -349,6 +366,12 @@ export default function ExtractionPanel() {
 
       // All batches complete — build final snapshot
       if (!controller.signal.aborted && useStore.getState().progress.status === 'extracting') {
+        // Fallback: if no groups from SSE, build from results
+        if (!accumulatedGroups.length && accumulatedResults.length > 0) {
+          accumulatedGroups = Array.from(
+            new Map(accumulatedResults.map((r) => [r.groupId, { groupId: r.groupId, groupKey: r.fileName.split('.')[0], fileCount: 1 }])).values(),
+          );
+        }
         setExtractionSnapshot({
           results: accumulatedResults,
           groups: accumulatedGroups,
@@ -360,16 +383,6 @@ export default function ExtractionPanel() {
               : p,
           ),
         );
-        // Fallback: if no groups from SSE, build from results
-        if (!accumulatedGroups.length && accumulatedResults.length > 0) {
-          accumulatedGroups = Array.from(
-            new Map(accumulatedResults.map((r) => [r.groupId, { groupId: r.groupId, groupKey: r.fileName.split('.')[0], fileCount: 1 }])).values(),
-          );
-        }
-        setExtractionSnapshot({
-          results: accumulatedResults,
-          groups: accumulatedGroups,
-        });
         setProgress({ status: 'extraction_done' });
         setHasExtracted(true);
         // Clear IndexedDB session on successful completion
@@ -467,6 +480,7 @@ export default function ExtractionPanel() {
       prompts: {
         extraction: useStore.getState().promptSettings.extraction || undefined,
       },
+      apiSettings: useStore.getState().apiSettings,
     };
 
     const controller = new AbortController();
@@ -731,9 +745,13 @@ export default function ExtractionPanel() {
 
         {/* ---------- Status ---------- */}
         {progress.status === 'error' && !isExtracting && (
-          <div className="flex items-center gap-2 text-sm text-destructive">
-            <XCircle className="size-4" />
+          <div className="flex items-center gap-3 text-sm text-destructive">
+            <XCircle className="size-4 shrink-0" />
             {t('review.error')}
+            <Button variant="outline" size="sm" onClick={handleExtract} disabled={!canStart}>
+              <RotateCcw className="size-3 mr-1" />
+              {t('review.restart')}
+            </Button>
           </div>
         )}
 
@@ -868,12 +886,12 @@ export default function ExtractionPanel() {
 
             {/* Result Preview Dialog */}
             {previewResult && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setPreviewResult(null)}>
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setPreviewResult(null)} role="dialog" aria-modal="true" aria-label={previewResult.fileName}>
                 <Card className="max-w-2xl w-full mx-4 max-h-[85vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                     <CardTitle className="text-base">{previewResult.fileName}</CardTitle>
-                    <button onClick={() => setPreviewResult(null)} className="text-muted-foreground hover:text-foreground text-lg">
-                      &times;
+                    <button onClick={() => setPreviewResult(null)} className="text-muted-foreground hover:text-foreground rounded-md p-1 hover:bg-muted transition-colors">
+                      <X className="size-4" />
                     </button>
                   </CardHeader>
                   <CardContent className="flex flex-col gap-4">

@@ -81,24 +81,22 @@ export const KEY_ALIGN_SYSTEM_MESSAGE = `你是键名归一化专家。你的任
 // Phase 2: Group merge — system message
 // ---------------------------------------------------------------------------
 
-export const MERGE_SYSTEM_MESSAGE = `你是一个数据合并工具。只输出JSON，不要任何其他文本。
+export const MERGE_SYSTEM_MESSAGE = `你是数据合并和结构化工具。只输出JSON，不要任何其他文本。
 
-将同一组的多个文档提取结果合并为一条记录，只输出模板中指定的字段。
+将同一组的多个文档提取结果合并为结构化记录。
 
-# 合并规则
+# 核心要求
 
-1. 输出只包含模板列中指定的键，不要添加模板之外的键。
-2. 不同文档中的不同字段全部保留。
-3. 值一致时保留任意一个。
-4. **值不一致时，用换行分隔保留所有值并标注来源文件**，格式：
-   "值1 [文件名1]\n值2 [文件名2]"。
-   这对量化指标尤其重要——不同时间点的值变化具有参考价值。
-5. 用分隔符拼接的列表取并集并去重。
+1. **必须使用模板列指定的键名**：将提取数据中的信息映射到模板列对应的键名。即使原文使用的名称不同（如原文"患者姓名"对应模板列"姓名"），也要按模板列名称输出。
+2. **如果一个文档包含多个独立条目**（如表格的多行数据、多个人员记录等），每个条目输出为 entries 数组中的一个独立对象。
+3. **每个对象必须包含所有模板列**。没有对应值的字段填 null。
+4. **不要输出模板之外的键**。
+5. 值不一致时，保留所有值并标注来源文件，格式："值1 [文件名1]\\n值2 [文件名2]"。
 6. 不要编造原文中不存在的信息。
 
 # 输出格式
-{"merged": {"字段名": "值", ...}, "conflicts": [{"field": "字段名", "values": ["文件名: 值"]}]}
-所有值为字符串或数字，不含嵌套对象和数组。`;
+{"entries": [{"模板列名1": "值", "模板列名2": null, ...}, ...], "conflicts": [{"field": "字段名", "values": ["文件名: 值"]}]}
+所有值为字符串、数字或null，不含嵌套对象和数组。entries 为对象数组，即使只有一条也必须用数组。`;
 
 /**
  * Build merge user message from a group's extraction results and optional template columns.
@@ -112,10 +110,10 @@ export function buildMergeUserMessage(
     results.map((r) => JSON.stringify({ file_name: r.fileName, extracted_data: r.data })).join(',\n') +
     '\n]';
 
-  let msg = `以下是同一组文档（"${groupKey}"）的提取结果，请合并为一条完整记录。\n\n${filesSection}`;
+  let msg = `以下是同一组文档（"${groupKey}"）的提取结果，请将提取结果中的信息映射到模板列，合并为结构化记录。\n\n${filesSection}`;
 
   if (templateColumns && templateColumns.length > 0) {
-    msg += `\n\n输出模板列（只输出以下字段）：\n${templateColumns.map((c) => `- ${c.key}${c.description ? `: ${c.description}` : ''}`).join('\n')}`;
+    msg += `\n\n输出模板列（必须使用以下键名，将原文数据映射到对应列，没有对应信息的列填 null）：\n${templateColumns.map((c) => `- ${c.key}${c.description ? ` (${c.description})` : ''}`).join('\n')}`;
   }
 
   return msg;

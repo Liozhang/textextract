@@ -66,6 +66,12 @@ export interface PromptSettings {
   merge: string;
 }
 
+export interface ApiSettings {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
 // ---------------------------------------------------------------------------
 // State shape
 // ---------------------------------------------------------------------------
@@ -113,6 +119,10 @@ export interface AppState {
   promptSettings: PromptSettings;
   setPromptSettings: (phase: keyof PromptSettings, value: string) => void;
   resetPromptSettings: () => void;
+
+  // API settings (user-configurable, persisted except apiKey)
+  apiSettings: ApiSettings;
+  setApiSettings: (settings: Partial<ApiSettings>) => void;
 
   // Template columns
   templateColumns: ColumnConstraint[];
@@ -176,6 +186,12 @@ const DEFAULT_PROMPT_SETTINGS: PromptSettings = {
   keyAlign: '',
   schemaAlign: '',
   merge: '',
+};
+
+const DEFAULT_API_SETTINGS: ApiSettings = {
+  baseUrl: '',
+  apiKey: '',
+  model: '',
 };
 
 // ---------------------------------------------------------------------------
@@ -247,6 +263,13 @@ export const useStore = create<AppState>()(
       resetPromptSettings: () =>
         set({ promptSettings: { ...DEFAULT_PROMPT_SETTINGS } }),
 
+      // --- API Settings ---
+      apiSettings: { ...DEFAULT_API_SETTINGS },
+      setApiSettings: (partial) =>
+        set((state) => ({
+          apiSettings: { ...state.apiSettings, ...partial },
+        })),
+
       // --- Template Columns ---
       templateColumns: [],
       templatePrompt: '',
@@ -315,6 +338,12 @@ export const useStore = create<AppState>()(
         exportSettings: state.exportSettings,
         locale: state.locale,
         promptSettings: state.promptSettings,
+        apiSettings: {
+          baseUrl: state.apiSettings.baseUrl,
+          model: state.apiSettings.model,
+          // SECURITY: apiKey is excluded from persistence
+          apiKey: '',
+        },
       }),
       // Skip hydration on server; the `mounted` flag is used client-side
       skipHydration: true,

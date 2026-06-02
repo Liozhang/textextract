@@ -29,6 +29,8 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { Settings, RotateCcw, ChevronDown } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 const PHASES: Array<{ key: keyof PromptSettings; defaultKey: keyof typeof DEFAULT_PROMPTS }> = [
   { key: 'extraction', defaultKey: 'extraction' },
@@ -42,6 +44,8 @@ export default function PromptSettings() {
   const promptSettings = useStore((s) => s.promptSettings);
   const setPromptSettings = useStore((s) => s.setPromptSettings);
   const resetPromptSettings = useStore((s) => s.resetPromptSettings);
+  const apiSettings = useStore((s) => s.apiSettings);
+  const setApiSettings = useStore((s) => s.setApiSettings);
 
   const [open, setOpen] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -89,6 +93,45 @@ export default function PromptSettings() {
           <DialogHeader>
             <DialogTitle>{t('settings.title')}</DialogTitle>
           </DialogHeader>
+
+          {/* ── API Configuration ──────────────────────────────────────── */}
+          <div className="space-y-3 mt-4">
+            <h4 className="text-sm font-semibold">{t('settings.apiSection')}</h4>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="api-base-url" className="text-xs text-muted-foreground">
+                {t('settings.apiBaseUrl')}
+              </Label>
+              <Input
+                id="api-base-url"
+                value={apiSettings.baseUrl}
+                onChange={(e) => setApiSettings({ baseUrl: e.target.value })}
+                placeholder={t('settings.apiBaseUrlPlaceholder')}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="api-key" className="text-xs text-muted-foreground">
+                {t('settings.apiKey')}
+              </Label>
+              <Input
+                id="api-key"
+                type="password"
+                value={apiSettings.apiKey}
+                onChange={(e) => setApiSettings({ apiKey: e.target.value })}
+                placeholder={t('settings.apiKeyPlaceholder')}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="api-model" className="text-xs text-muted-foreground">
+                {t('settings.apiModel')}
+              </Label>
+              <Input
+                id="api-model"
+                value={apiSettings.model}
+                onChange={(e) => setApiSettings({ model: e.target.value })}
+                placeholder={t('settings.apiModelPlaceholder')}
+              />
+            </div>
+          </div>
 
           <div className="space-y-3 mt-4">
             {PHASES.map(({ key, defaultKey }) => (

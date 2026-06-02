@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server'
 import OpenAI from 'openai'
 import { supportsJsonResponseFormat } from '@/lib/merge-utils'
-import { isPrivateHost } from '@/lib/api-utils'
+import { isPrivateHost, resolveApiSettings } from '@/lib/api-utils'
 
 const TEMPLATE_SYSTEM_PROMPT = `你是一个输出模板设计助手。根据用户提供的模板字段描述，为每个字段生成结构化的列定义。
 
@@ -19,28 +19,27 @@ const TEMPLATE_SYSTEM_PROMPT = `你是一个输出模板设计助手。根据用
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { prompt, extractionData } = body as {
+    const { prompt, extractionData, apiSettings: apiSettingsOverride } = body as {
       prompt?: string
       extractionData?: Array<{ data?: Record<string, unknown> }>
+      apiSettings?: { baseUrl?: string; apiKey?: string; model?: string }
     }
 
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
       return Response.json({ error: '请输入模板描述' }, { status: 400, headers: { 'Content-Type': 'application/json' } })
     }
 
-    const baseUrl = (process.env.API_BASE_URL || '').trim()
-    const apiKey = (process.env.API_KEY || '').trim()
-    const model = (process.env.API_MODEL || '').trim()
+    const apiSettings = resolveApiSettings(apiSettingsOverride)
 
-    if (!baseUrl || !apiKey || !model) {
+    if (!apiSettings.baseUrl || !apiSettings.apiKey || !apiSettings.model) {
       return Response.json({ error: 'API 设置不完整' }, { status: 400, headers: { 'Content-Type': 'application/json' } })
     }
 
-    if (isPrivateHost(baseUrl)) {
+    if (isPrivateHost(apiSettings.baseUrl)) {
       return Response.json({ error: '不允许访问内网地址' }, { status: 400, headers: { 'Content-Type': 'application/json' } })
     }
 
-    const openai = new OpenAI({ baseURL: baseUrl, apiKey })
+    const openai = new OpenAI({ baseURL: apiSettings.baseUrl, apiKey: apiSettings.apiKey })
 
     // Build user message — include extracted fields as reference for type inference
     let userMessage = prompt.trim()
@@ -68,13 +67,13 @@ export async function POST(request: NextRequest) {
     }
 
     const completion = await openai.chat.completions.create({
-      model,
+      model: apiSettings.model,
       messages: [
         { role: 'system', content: TEMPLATE_SYSTEM_PROMPT },
         { role: 'user', content: userMessage },
       ],
       temperature: 0.3,
-      ...(supportsJsonResponseFormat(model) ? { response_format: { type: 'json_object' } } : {}),
+      ...(supportsJsonResponseFormat(apiSettings.model) ? { response_format: { type: 'json_object' } } : {}),
     } as any)
 
     const content = completion.choices?.[0]?.message?.content || ''

@@ -4,19 +4,13 @@ import OpenAI from 'openai'
 export const maxDuration = 300
 
 import { mergeGroupWithAI } from '@/lib/pipeline/merge-agent'
-import { isPrivateHost, sseEvent, workerPool } from '@/lib/api-utils'
+import { isPrivateHost, sseEvent, workerPool, resolveApiSettings, type ApiSettingsResolved } from '@/lib/api-utils'
 import { MERGE_SYSTEM_MESSAGE } from '@/lib/pipeline/prompts'
 import type { PerFileResult, MergedRecord } from '@/lib/pipeline/types'
+import type { ColumnConstraint } from '@/lib/store'
 import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-
-interface ColumnConstraint {
-  key: string
-  type: 'string' | 'number' | 'boolean'
-  description: string
-  example?: string
-}
 
 interface AlignMergeRequestBody {
   extractionData: PerFileResult[]
@@ -24,6 +18,11 @@ interface AlignMergeRequestBody {
   columns?: ColumnConstraint[]
   prompts?: {
     merge?: string
+  }
+  apiSettings?: {
+    baseUrl?: string
+    apiKey?: string
+    model?: string
   }
 }
 
@@ -37,21 +36,19 @@ async function mergeGroupWithFallback(
   abortSignal: AbortSignal,
   mergePrompt?: string,
   templateColumns?: Array<{ key: string; description?: string }>,
-): Promise<MergedRecord> {
+): Promise<MergedRecord[]> {
   const successful = groupResults.filter((r) => r.success && r.data)
 
-  // Single file or all failed -> pass through (filter to template columns if provided)
+  // Single file or all failed -> pass through (enforce template columns if provided)
   if (successful.length <= 1) {
     const r = groupResults.find((r) => r.success) || groupResults[0]
     const rawData = r?.data || {}
     const filteredData = templateColumns && templateColumns.length > 0
       ? Object.fromEntries(
-          templateColumns
-            .filter((c) => c.key in rawData)
-            .map((c) => [c.key, rawData[c.key]]),
+          templateColumns.map((c) => [c.key, c.key in rawData ? rawData[c.key] : null]),
         )
       : rawData
-    return {
+    return [{
       groupId: group.groupId,
       groupKey: group.groupKey,
       data: filteredData,
@@ -60,7 +57,7 @@ async function mergeGroupWithFallback(
       mergedCount: successful.length,
       mergeMethod: 'single',
       conflicts: [],
-    }
+    }]
   }
 
   try {
@@ -113,6 +110,7 @@ export async function POST(request: NextRequest) {
       groups,
       columns: templateColumns,
       prompts: customPrompts,
+      apiSettings: apiSettingsOverride,
     } = body
 
     if (!extractionData || extractionData.length === 0) {
@@ -136,14 +134,10 @@ export async function POST(request: NextRequest) {
     // Resolve prompts
     const mergePrompt = customPrompts?.merge || MERGE_SYSTEM_MESSAGE
 
-    const apiSettings = {
-      baseUrl: (process.env.API_BASE_URL || '').trim(),
-      apiKey: (process.env.API_KEY || '').trim(),
-      model: (process.env.API_MODEL || '').trim(),
-    }
+    const apiSettings = resolveApiSettings(apiSettingsOverride)
 
     if (!apiSettings.baseUrl || !apiSettings.apiKey || !apiSettings.model) {
-      return new Response(JSON.stringify({ error: 'API 设置不完整，请在 .env 中配置 API_BASE_URL, API_KEY, API_MODEL' }), {
+      return new Response(JSON.stringify({ error: 'API 设置不完整，请在设置中配置或在 .env 中配置 API_BASE_URL, API_KEY, API_MODEL' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -206,7 +200,7 @@ export async function POST(request: NextRequest) {
               successCount: groupResults.filter((r) => r.success).length,
             })
 
-            const merged = await mergeGroupWithFallback(
+            const groupRecords = await mergeGroupWithFallback(
               openai,
               apiSettings.model,
               group,
@@ -217,47 +211,58 @@ export async function POST(request: NextRequest) {
             )
 
             send('group_merged', {
-              groupId: merged.groupId,
-              groupKey: merged.groupKey,
-              sourceFileNames: merged.sourceFileNames,
-              mergedCount: merged.mergedCount,
-              mergeMethod: merged.mergeMethod,
-              conflicts: merged.conflicts,
+              groupId: group.groupId,
+              groupKey: group.groupKey,
+              sourceFileNames: groupRecords[0]?.sourceFileNames ?? [],
+              mergedCount: groupRecords.length,
+              mergeMethod: groupRecords[0]?.mergeMethod ?? 'single',
+              conflicts: groupRecords.flatMap((r) => r.conflicts),
             })
 
-            mergedRecords.push(merged)
+            mergedRecords.push(...groupRecords)
           })
 
           // ── Final: send all_done ──────────────────────────────────────────
+          // Count entries per group (for multi-entry labels)
+          const groupEntryCounts = new Map<string, number>();
+          const groupEntryIndices = new Map<string, number>();
+          for (const r of mergedRecords) {
+            groupEntryCounts.set(r.groupId, (groupEntryCounts.get(r.groupId) || 0) + 1);
+          }
+
           const rows = mergedRecords.map((record) => {
-            const data: Record<string, unknown> = {}
+            const idx = groupEntryIndices.get(record.groupId) || 0;
+            groupEntryIndices.set(record.groupId, idx + 1);
+            const totalInGroup = groupEntryCounts.get(record.groupId) || 1;
+
+            const data: Record<string, unknown> = {};
 
             // Only output template columns
             for (const h of outputHeaders) {
-              data[h] = record.data[h] ?? null
+              data[h] = record.data[h] ?? null;
             }
 
             // Build fieldConsistency from conflicts
-            const fieldConsistency: Record<string, boolean> = {}
+            const fieldConsistency: Record<string, boolean> = {};
             for (const conflict of record.conflicts) {
-              fieldConsistency[conflict.fieldName] = false
+              fieldConsistency[conflict.fieldName] = false;
             }
             for (const h of Object.keys(data)) {
               if (fieldConsistency[h] === undefined) {
-                fieldConsistency[h] = true
+                fieldConsistency[h] = true;
               }
             }
 
             return {
-              id: record.groupId,
-              label: record.groupKey,
+              id: totalInGroup > 1 ? `${record.groupId}-${idx}` : record.groupId,
+              label: totalInGroup > 1 ? `${record.groupKey} #${idx + 1}` : record.groupKey,
               data,
               imageDataUrl: record.imageDataUrl,
               sourceFiles: record.sourceFileNames,
               isMerged: record.mergedCount > 1,
               fieldConsistency,
               mergeMethod: record.mergeMethod,
-            }
+            };
           })
 
           send('all_done', {

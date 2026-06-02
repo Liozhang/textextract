@@ -156,7 +156,7 @@ export default function FileUploadPanel() {
   const clearFiles = useStore((s) => s.clearFiles);
   const progress = useStore((s) => s.progress);
 
-  const isPipelineActive = progress.status === 'extracting' || progress.status === 'aligning_merging';
+  const isPipelineActive = progress.status === 'extracting' || progress.status === 'keys_aligning' || progress.status === 'aligning_merging';
 
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
