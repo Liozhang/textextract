@@ -111,5 +111,5 @@ export interface FieldPathInfo {
   path: string;
   count: number;
   sampleValues: unknown[];
-  type: 'string' | 'number' | 'measurement' | 'array' | 'object' | 'other';
+  type: 'string' | 'number' | 'boolean' | 'measurement' | 'array' | 'object' | 'other';
 }

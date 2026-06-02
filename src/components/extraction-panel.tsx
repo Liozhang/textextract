@@ -552,7 +552,14 @@ export default function ExtractionPanel() {
       abortRef.current.abort();
       abortRef.current = null;
     }
-    setProgress({ status: 'idle', currentFile: '' });
+    // If retrying failed files, abort should return to extraction_done (preserve results)
+    // If fresh extraction, abort should return to idle
+    const currentStatus = useStore.getState().progress.status;
+    if (currentStatus === 'extracting' && useStore.getState().extractionSnapshot) {
+      setProgress({ status: 'extraction_done', currentFile: '' });
+    } else {
+      setProgress({ status: 'idle', currentFile: '' });
+    }
     setPhases((prev) =>
       prev.map((p) => {
         if (p.status === 'active') return { ...p, status: 'pending', detail: '' };

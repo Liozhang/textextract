@@ -58,7 +58,8 @@ function walkPaths(
 
 function detectType(val: unknown): FieldPathInfo['type'] {
   if (typeof val === 'string') return 'string';
-  if (typeof val === 'number' || typeof val === 'boolean') return 'number';
+  if (typeof val === 'number') return 'number';
+  if (typeof val === 'boolean') return 'boolean';
   if (Array.isArray(val)) return 'array';
   if (typeof val === 'object' && val !== null) {
     if ('value' in val && 'unit' in val) return 'measurement';

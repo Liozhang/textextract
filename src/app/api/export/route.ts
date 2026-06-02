@@ -127,8 +127,8 @@ export async function POST(request: NextRequest) {
           csvLines.push(row.map(escapeField).join(','))
         }
 
-        // Normalize line endings to \r\n for proper CSV
-        const csvContent = csvLines.join('\r\n')
+        // BOM for Excel UTF-8 compatibility + normalize line endings
+        const csvContent = '\uFEFF' + csvLines.join('\r\n')
 
         return new Response(csvContent, {
           status: 200,
