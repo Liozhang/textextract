@@ -363,6 +363,11 @@ export default function ExtractionPanel() {
         setHasExtracted(true);
         // Clear IndexedDB session on successful completion
         clearSession(sessionId).catch(() => {});
+        // Clean up server temp files for all unique sessionIds
+        const serverSessionIds = [...new Set(files.map((f) => f.sessionId).filter(Boolean))] as string[];
+        serverSessionIds.forEach((sid) => {
+          fetch(`/api/upload/${sid}`, { method: 'DELETE' }).catch(() => {});
+        });
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {

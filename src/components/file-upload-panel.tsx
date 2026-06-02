@@ -27,6 +27,9 @@ import { generateId, formatFileSize } from '@/lib/utils';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB per file
 const MAX_FILE_COUNT = 100;
+const IMAGE_COMPRESS_THRESHOLD = 1 * 1024 * 1024; // 1MB — compress images above this
+const IMAGE_MAX_WIDTH = 2048;
+const IMAGE_QUALITY = 0.85;
 
 const ACCEPTED_EXTENSIONS = [
   '.pdf',
@@ -44,6 +47,47 @@ const ACCEPTED_EXTENSIONS = [
 ];
 
 const ACCEPT_STRING = ACCEPTED_EXTENSIONS.join(',');
+
+/** Compress an image file using Canvas if it exceeds the size threshold */
+function compressImage(file: File): Promise<File> {
+  return new Promise((resolve) => {
+    if (file.size < IMAGE_COMPRESS_THRESHOLD || !file.type.startsWith('image/')) {
+      resolve(file);
+      return;
+    }
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let { width, height } = img;
+
+      if (width > IMAGE_MAX_WIDTH) {
+        height = Math.round((height * IMAGE_MAX_WIDTH) / width);
+        width = IMAGE_MAX_WIDTH;
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, width, height);
+
+      canvas.toBlob(
+        (blob) => {
+          if (blob && blob.size < file.size) {
+            // @ts-expect-error File constructor differs between browser and Node types
+            resolve(new File([blob], file.name, { type: 'image/jpeg' }));
+          } else {
+            resolve(file);
+          }
+        },
+        'image/jpeg',
+        IMAGE_QUALITY,
+      );
+    };
+    img.onerror = () => resolve(file);
+    img.src = URL.createObjectURL(file);
+  });
+}
 
 function getFileExtension(name: string): string {
   const idx = name.lastIndexOf('.');
@@ -77,8 +121,11 @@ async function uploadFilesToServer(rawFiles: File[]): Promise<{
   files: Array<{ fileId: string; name: string; size: number; type: string }>;
 } | null> {
   try {
+    // Compress images before upload
+    const compressedFiles = await Promise.all(rawFiles.map(compressImage));
+
     const formData = new FormData();
-    for (const f of rawFiles) {
+    for (const f of compressedFiles) {
       formData.append('files', f);
     }
     const res = await fetch('/api/upload', { method: 'POST', body: formData });

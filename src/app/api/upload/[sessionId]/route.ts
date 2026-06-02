@@ -1,0 +1,50 @@
+import { NextRequest } from 'next/server'
+import { rm } from 'fs/promises'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import { existsSync } from 'fs'
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ sessionId: string }> },
+) {
+  try {
+    const { sessionId } = await params
+    if (!sessionId) {
+      return new Response(JSON.stringify({ error: '缺少 sessionId' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Prevent path traversal
+    if (sessionId.includes('..') || sessionId.includes('/') || sessionId.includes('\\')) {
+      return new Response(JSON.stringify({ error: '无效的 sessionId' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    const sessionDir = join(tmpdir(), 'ocr-extract', sessionId)
+
+    if (!existsSync(sessionDir)) {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    await rm(sessionDir, { recursive: true, force: true })
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '清理失败'
+    return new Response(
+      JSON.stringify({ error: message }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+}
