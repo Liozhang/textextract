@@ -3,19 +3,10 @@ import OpenAI from 'openai'
 
 export const maxDuration = 300
 
-import { alignSchemaWithAI, alignSchema } from '@/lib/pipeline/schema-aligner'
-import {
-  collectFieldPaths,
-  applyFlattenedSchemaToResults,
-  buildUnifiedSchemaFromMerged,
-} from '@/lib/pipeline/schema-flattener'
 import { mergeGroupWithAI } from '@/lib/pipeline/merge-agent'
-import {
-  SCHEMA_ALIGN_SYSTEM_MESSAGE,
-  MERGE_SYSTEM_MESSAGE,
-} from '@/lib/pipeline/prompts'
-import { strategyMerge } from '@/lib/merge-utils'
-import type { PerFileResult, AlignedPerFileResult, MergedRecord } from '@/lib/pipeline/types'
+import { MERGE_SYSTEM_MESSAGE } from '@/lib/pipeline/prompts'
+import type { PerFileResult, MergedRecord } from '@/lib/pipeline/types'
+import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -31,11 +22,8 @@ interface AlignMergeRequestBody {
   groups: Array<{ groupId: string; groupKey: string }>
   columns?: ColumnConstraint[]
   prompts?: {
-    schemaAlign?: string
     merge?: string
   }
-  skipAlign?: boolean
-  fieldOrder?: string[]
 }
 
 // ─── Security: URL validation ────────────────────────────────────────────────
@@ -68,12 +56,6 @@ function sseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
-function inferRule(type: string): 'leaf' | 'measurement' | 'join_comma' {
-  if (type === 'measurement') return 'measurement'
-  if (type === 'array') return 'join_comma'
-  return 'leaf'
-}
-
 // ─── Worker pool for concurrent merge processing ─────────────────────────
 
 async function workerPool<T>(
@@ -100,19 +82,28 @@ async function mergeGroupWithFallback(
   openai: OpenAI,
   model: string,
   group: { groupId: string; groupKey: string },
-  groupResults: AlignedPerFileResult[],
+  groupResults: PerFileResult[],
   abortSignal: AbortSignal,
   mergePrompt?: string,
+  templateColumns?: Array<{ key: string; description?: string }>,
 ): Promise<MergedRecord> {
   const successful = groupResults.filter((r) => r.success && r.data)
 
-  // Single file or all failed → pass through
+  // Single file or all failed -> pass through (filter to template columns if provided)
   if (successful.length <= 1) {
     const r = groupResults.find((r) => r.success) || groupResults[0]
+    const rawData = r?.data || {}
+    const filteredData = templateColumns && templateColumns.length > 0
+      ? Object.fromEntries(
+          templateColumns
+            .filter((c) => c.key in rawData)
+            .map((c) => [c.key, rawData[c.key]]),
+        )
+      : rawData
     return {
       groupId: group.groupId,
       groupKey: group.groupKey,
-      data: r?.data || {},
+      data: filteredData,
       imageDataUrl: r?.imageDataUrl,
       sourceFileNames: successful.length > 0 ? successful.map((r) => r.fileName) : [r?.fileName || ''],
       mergedCount: successful.length,
@@ -122,24 +113,29 @@ async function mergeGroupWithFallback(
   }
 
   try {
-    return await mergeGroupWithAI(openai, model, group.groupKey, group.groupId, successful, abortSignal, mergePrompt)
-  } catch {
-    // Fallback to strategy merge
-    const { data, conflicts: fallbackConflicts } = strategyMerge(
-      successful.map(r => ({ data: r.data! as Record<string, unknown>, fileName: r.fileName })),
-      'first_wins',
+    return await mergeGroupWithAI(
+      openai,
+      model,
+      group.groupKey,
+      group.groupId,
+      successful.map((r) => ({
+        fileId: r.fileId,
+        fileName: r.fileName,
+        groupId: r.groupId,
+        success: true,
+        data: Object.fromEntries(
+          Object.entries(r.data!).map(([k, v]) => [k, v != null ? String(v) : '']),
+        ) as Record<string, string>,
+        imageDataUrl: r.imageDataUrl,
+      })),
+      abortSignal,
+      mergePrompt,
+      templateColumns,
     )
-    const imageResult = successful.find((r) => r.imageDataUrl)
-    return {
-      groupId: group.groupId,
-      groupKey: group.groupKey,
-      data,
-      imageDataUrl: imageResult?.imageDataUrl,
-      sourceFileNames: successful.map((r) => r.fileName),
-      mergedCount: successful.length,
-      mergeMethod: 'fallback_strategy',
-      conflicts: fallbackConflicts,
-    }
+  } catch (err) {
+    throw new Error(
+      `合并组 "${group.groupKey}" 失败: ${err instanceof Error ? err.message : '未知错误'}`,
+    )
   }
 }
 
@@ -166,8 +162,6 @@ export async function POST(request: NextRequest) {
       groups,
       columns: templateColumns,
       prompts: customPrompts,
-      skipAlign,
-      fieldOrder: preAlignedOrder,
     } = body
 
     if (!extractionData || extractionData.length === 0) {
@@ -189,7 +183,6 @@ export async function POST(request: NextRequest) {
     const perCallTimeout = Math.min(600_000, baseTimeout)
 
     // Resolve prompts
-    const schemaAlignPrompt = customPrompts?.schemaAlign || SCHEMA_ALIGN_SYSTEM_MESSAGE
     const mergePrompt = customPrompts?.merge || MERGE_SYSTEM_MESSAGE
 
     const apiSettings = {
@@ -217,6 +210,19 @@ export async function POST(request: NextRequest) {
       apiKey: apiSettings.apiKey,
     })
 
+    // Determine output headers: template columns > all unique keys
+    const allKeys = new Set<string>()
+    for (const r of extractionData) {
+      if (r.success && r.data) {
+        for (const k of Object.keys(r.data)) allKeys.add(k)
+      }
+    }
+    const outputHeaders = (templateColumns && templateColumns.length > 0)
+      ? templateColumns.map((c) => c.key)
+      : Array.from(allKeys)
+
+    const templateColsForAI = templateColumns?.map((c) => ({ key: c.key, description: c.description }))
+
     const stream = new ReadableStream({
       async start(controller) {
         const encoder = new TextEncoder()
@@ -232,72 +238,32 @@ export async function POST(request: NextRequest) {
         }
 
         try {
-          // ── Phase 2: Schema alignment + flattening ─────────────────────────
-          send('phase', { phase: 'aligning' })
-          const fieldPaths = collectFieldPaths(extractionData)
-          let schema
-          let schemaAiFailed = false
-
-          if (skipAlign) {
-            // Pre-aligned: build identity schema from field paths
-            schema = {
-              field_mapping: Object.fromEntries(fieldPaths.map((fp) => [fp.path, fp.path])),
-              field_order: preAlignedOrder || fieldPaths.map((fp) => fp.path),
-              flatten_rules: Object.fromEntries(fieldPaths.map((fp) => [fp.path, inferRule(fp.type)])),
-            }
-          } else {
-            try {
-              schema = await alignSchemaWithAI(openai, apiSettings.model, fieldPaths, abortController.signal, schemaAlignPrompt, perCallTimeout)
-            } catch (alignError) {
-              console.error('[align-merge] AI schema alignment failed:', alignError instanceof Error ? alignError.message : alignError)
-              schema = alignSchema(fieldPaths)
-              schemaAiFailed = true
-            }
-          }
-
-          // If template columns are provided, prioritize them in field_order
-          if (templateColumns && templateColumns.length > 0) {
-            const seedKeys = new Set(templateColumns.map((c) => c.key))
-            const seeded: string[] = []
-            const rest: string[] = []
-            for (const h of schema.field_order) {
-              if (seedKeys.has(h)) seeded.push(h)
-              else rest.push(h)
-            }
-            // Add any seed keys that AI didn't produce (will be populated during merge)
-            for (const c of templateColumns) {
-              if (!seeded.includes(c.key) && !rest.includes(c.key)) {
-                rest.unshift(c.key)
-              }
-            }
-            schema.field_order = [...seeded, ...rest]
-          }
-
-          // Apply flattened schema to each PerFileResult
-          const alignedResults = applyFlattenedSchemaToResults(extractionData, schema)
-
-          send('schema_ready', {
-            headers: schema.field_order,
-            totalRows: alignedResults.filter((r) => r.success).length,
-            ...(schemaAiFailed ? { aiFailed: true } : {}),
-          })
-
-          // ── Phase 3: Group merge (fields now aligned and flat) ────────────
+          // ── Phase: Merge per group ───────────────────────────────────────
           send('phase', { phase: 'merging' })
+          send('schema_ready', { headers: outputHeaders, totalRows: extractionData.filter((r) => r.success).length })
+
           const mergedRecords: MergedRecord[] = []
           const mergeConcurrency = Number(process.env.MERGE_CONCURRENCY) || 3
 
           await workerPool(groups, mergeConcurrency, async (group) => {
-            const groupAligned = alignedResults.filter((r) => r.groupId === group.groupId)
+            const groupResults = extractionData.filter((r) => r.groupId === group.groupId)
 
             send('merge_start', {
               groupId: group.groupId,
               label: group.groupKey,
-              fileCount: groupAligned.length,
-              successCount: groupAligned.filter((r) => r.success).length,
+              fileCount: groupResults.length,
+              successCount: groupResults.filter((r) => r.success).length,
             })
 
-            const merged = await mergeGroupWithFallback(openai, apiSettings.model, group, groupAligned, AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]), mergePrompt)
+            const merged = await mergeGroupWithFallback(
+              openai,
+              apiSettings.model,
+              group,
+              groupResults,
+              AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]),
+              mergePrompt,
+              templateColsForAI,
+            )
 
             send('group_merged', {
               groupId: merged.groupId,
@@ -311,22 +277,43 @@ export async function POST(request: NextRequest) {
             mergedRecords.push(merged)
           })
 
-          // ── Final: build UnifiedSchema and send all_done ──────────────────
-          const unifiedSchema = buildUnifiedSchemaFromMerged(mergedRecords, schema.field_order)
+          // ── Final: send all_done ──────────────────────────────────────────
+          const rows = mergedRecords.map((record) => {
+            const data: Record<string, unknown> = {}
+
+            // Only output template columns
+            for (const h of outputHeaders) {
+              data[h] = record.data[h] ?? null
+            }
+
+            // Build fieldConsistency from conflicts
+            const fieldConsistency: Record<string, boolean> = {}
+            for (const conflict of record.conflicts) {
+              fieldConsistency[conflict.fieldName] = false
+            }
+            for (const h of Object.keys(data)) {
+              if (fieldConsistency[h] === undefined) {
+                fieldConsistency[h] = true
+              }
+            }
+
+            return {
+              id: record.groupId,
+              label: record.groupKey,
+              data,
+              imageDataUrl: record.imageDataUrl,
+              sourceFiles: record.sourceFileNames,
+              isMerged: record.mergedCount > 1,
+              fieldConsistency,
+              mergeMethod: record.mergeMethod,
+            }
+          })
 
           send('all_done', {
             totalFiles: extractionData.length,
             totalGroups: groups.length,
             mergedGroups: mergedRecords.length,
-            rows: unifiedSchema.rows.map((row) => ({
-              id: row.id,
-              label: row.label,
-              data: row.data,
-              sourceFiles: row.sourceFiles,
-              isMerged: row.isMerged,
-              fieldConsistency: row.fieldConsistency,
-              mergeMethod: row.mergeMethod,
-            })),
+            rows,
           })
 
           controller.close()

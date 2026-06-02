@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server'
 import OpenAI from 'openai'
+import { supportsJsonResponseFormat } from '@/lib/merge-utils'
 
 const TEMPLATE_SYSTEM_PROMPT = `你是一个输出模板设计助手。根据用户提供的模板字段描述，为每个字段生成结构化的列定义。
 
@@ -84,7 +85,7 @@ export async function POST(request: NextRequest) {
         { role: 'user', content: userMessage },
       ],
       temperature: 0.3,
-      response_format: { type: 'json_object' },
+      ...(supportsJsonResponseFormat(model) ? { response_format: { type: 'json_object' } } : {}),
     } as any)
 
     const content = completion.choices?.[0]?.message?.content || ''

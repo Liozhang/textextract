@@ -45,7 +45,7 @@ export interface MergedRecord {
   imageDataUrl?: string;
   sourceFileNames: string[];
   mergedCount: number;
-  mergeMethod: 'ai' | 'fallback_strategy' | 'single';
+  mergeMethod: 'ai' | 'single';
   conflicts: ConflictInfo[];
 }
 

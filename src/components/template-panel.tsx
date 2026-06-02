@@ -24,6 +24,7 @@ import {
   Check,
   Download,
   Keyboard,
+  CheckCircle2,
 } from 'lucide-react';
 
 interface TemplatePanelProps {
@@ -97,6 +98,7 @@ export default function TemplatePanel({
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
   const [newKeyName, setNewKeyName] = useState('');
+  const [selectedImportKeys, setSelectedImportKeys] = useState<Set<string>>(new Set());
 
   // All unique fields from extraction data (for import-all)
   const allExtractedFields = useMemo(() => {
@@ -112,30 +114,48 @@ export default function TemplatePanel({
     return Array.from(fieldSet);
   }, [extractionData]);
 
-  // Auto-fill from prefilledKeys (normalized keys) on mount
-  const handleImportPrefilled = useCallback(() => {
-    if (!prefilledKeys || prefilledKeys.length === 0) return;
-    const existing = new Set(templateColumns.map((c) => c.key));
-    const toAdd = prefilledKeys
-      .filter((k) => !existing.has(k))
-      .map((key) => ({ key, type: 'string' as const, description: key, example: '' }));
-    if (toAdd.length > 0) {
-      setTemplateColumns([...templateColumns, ...toAdd]);
-      setTemplateGenerated(true);
-    }
-  }, [prefilledKeys, templateColumns, setTemplateColumns, setTemplateGenerated]);
+  // The source keys to show as selectable badges (prefer normalized keys, fallback to all extracted)
+  const availableKeys = useMemo(() => {
+    if (prefilledKeys && prefilledKeys.length > 0) return prefilledKeys;
+    return allExtractedFields;
+  }, [prefilledKeys, allExtractedFields]);
 
-  // Auto-fill from all extracted fields
-  const handleImportAllFields = useCallback(() => {
+  // Toggle a key in the selection set
+  const toggleKey = useCallback((key: string) => {
+    setSelectedImportKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  // Select / deselect all available keys
+  const handleSelectAll = useCallback(() => {
     const existing = new Set(templateColumns.map((c) => c.key));
-    const toAdd = allExtractedFields
-      .filter((k) => !existing.has(k))
-      .map((key) => ({ key, type: 'string' as const, description: key, example: '' }));
+    setSelectedImportKeys(new Set(availableKeys.filter((k) => !existing.has(k))));
+  }, [availableKeys, templateColumns]);
+
+  const handleDeselectAll = useCallback(() => {
+    setSelectedImportKeys(new Set());
+  }, []);
+
+  // Import selected keys into template columns
+  const handleImportSelected = useCallback(() => {
+    if (selectedImportKeys.size === 0) return;
+    const existing = new Set(templateColumns.map((c) => c.key));
+    const toAdd: ColumnConstraint[] = [];
+    for (const key of selectedImportKeys) {
+      if (!existing.has(key)) {
+        toAdd.push({ key, type: 'string' as const, description: key, example: '' });
+      }
+    }
     if (toAdd.length > 0) {
       setTemplateColumns([...templateColumns, ...toAdd]);
       setTemplateGenerated(true);
     }
-  }, [allExtractedFields, templateColumns, setTemplateColumns, setTemplateGenerated]);
+    setSelectedImportKeys(new Set());
+  }, [selectedImportKeys, templateColumns, setTemplateColumns, setTemplateGenerated]);
 
   // Add single key manually
   const handleAddKey = useCallback(() => {
@@ -358,27 +378,48 @@ export default function TemplatePanel({
             </Button>
           </div>
 
-          {/* Import buttons */}
-          <div className="flex gap-2 flex-wrap">
-            {prefilledKeys && prefilledKeys.length > 0 && (
-              <Button variant="outline" size="sm" onClick={handleImportPrefilled}>
-                <Download className="h-3.5 w-3.5 mr-1" />
-                {t('template.importFields')}
-                <span className="text-muted-foreground text-xs ml-1">
-                  ({prefilledKeys.length})
-                </span>
-              </Button>
-            )}
-            {allExtractedFields.length > 0 && (
-              <Button variant="outline" size="sm" onClick={handleImportAllFields}>
-                <Download className="h-3.5 w-3.5 mr-1" />
-                {t('template.importFields')}
-                <span className="text-muted-foreground text-xs ml-1">
-                  ({allExtractedFields.length})
-                </span>
-              </Button>
-            )}
-          </div>
+          {/* Selectable field badges */}
+          {availableKeys.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">{t('template.selectFieldsDesc')}</span>
+                <div className="flex gap-2">
+                  <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={handleSelectAll}>
+                    {t('template.selectAll')}
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={handleDeselectAll}>
+                    {t('template.deselectAll')}
+                  </Button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {availableKeys.map((key) => {
+                  const alreadyInTemplate = templateColumns.some((c) => c.key === key);
+                  const isSelected = selectedImportKeys.has(key);
+                  return (
+                    <Badge
+                      key={key}
+                      variant={isSelected ? 'default' : 'outline'}
+                      className={`cursor-pointer select-none text-xs transition-colors ${
+                        alreadyInTemplate ? 'opacity-40 pointer-events-none' : ''
+                      }`}
+                      onClick={() => !alreadyInTemplate && toggleKey(key)}
+                    >
+                      {isSelected && <CheckCircle2 className="size-3 mr-1" />}
+                      {key}
+                      {alreadyInTemplate && ' ✓'}
+                    </Badge>
+                  );
+                })}
+              </div>
+              {selectedImportKeys.size > 0 && (
+                <Button size="sm" onClick={handleImportSelected}>
+                  <Download className="h-3.5 w-3.5 mr-1" />
+                  {t('template.importSelected', { count: selectedImportKeys.size })}
+                </Button>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 

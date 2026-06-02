@@ -57,14 +57,12 @@ import {
 const INIT_PHASES: PipelinePhase[] = [
   { key: 'grouping', status: 'done', detail: '' },
   { key: 'extracting', status: 'done', detail: '' },
-  { key: 'aligning', status: 'pending', detail: '' },
   { key: 'merging', status: 'pending', detail: '' },
 ];
 
 const ALL_DONE_PHASES: PipelinePhase[] = [
   { key: 'grouping', status: 'done', detail: '' },
   { key: 'extracting', status: 'done', detail: '' },
-  { key: 'aligning', status: 'done', detail: '' },
   { key: 'merging', status: 'done', detail: '' },
 ];
 
@@ -168,7 +166,6 @@ export default function TemplateStepPanel() {
 
     const currentColumns = useStore.getState().templateColumns;
     const currentPromptSettings = useStore.getState().promptSettings;
-    const keyAlignment = useStore.getState().keyAlignmentResult;
 
     const body = {
       extractionData: snapshot.results.map((r) => ({
@@ -182,10 +179,8 @@ export default function TemplateStepPanel() {
       groups: snapshot.groups.map((g) => ({ groupId: g.groupId, groupKey: g.groupKey })),
       ...(currentColumns.length > 0 ? { columns: currentColumns } : {}),
       prompts: {
-        schemaAlign: currentPromptSettings.schemaAlign || undefined,
         merge: currentPromptSettings.merge || undefined,
       },
-      ...(keyAlignment ? { skipAlign: true, fieldOrder: keyAlignment.fieldOrder } : {}),
     };
 
     const controller = new AbortController();

@@ -87,54 +87,50 @@ export const KEY_ALIGN_SYSTEM_MESSAGE = `你是键名归一化专家。你的任
 // Phase 2: Group merge — system message
 // ---------------------------------------------------------------------------
 
-export const MERGE_SYSTEM_MESSAGE = `你是数据合并专家。你的任务是将同一组的多个文档提取结果合并为一条完整记录。
+export const MERGE_SYSTEM_MESSAGE = `你是数据合并专家。将同一组的多个文档提取结果合并为一条完整记录，按给定的输出模板列输出。
 
-输入数据的字段名已经过标准化处理，所有值均为字符串或数字。合并后的结果必须是扁平结构（无嵌套对象、无数组）。
+直接输出JSON，不要思考、不要分析、不要解释。
 
 ## 合并规则
 
-1. **互补保留**：不同文档中的不同字段全部保留。
-2. **一致合并**：相同字段的值如果完全一致，保留任意一个。
-3. **冲突处理**：相同字段的值如果不一致，按以下优先级处理：
-   - 如果信息互补（如一个是另一个的子集），合并为更完整的值。
-   - 否则保留信息更完整、更详细的那个。
-4. **列表去重**：同一字段中用分隔符（分号或逗号）拼接的列表，取所有来源的并集并按语义去重。
-5. **长文本保留**：长文本内容如来自不同来源且内容不同，用换行符分隔拼接保留全部内容，不要丢弃。
-6. **禁止编造**：不要编造任何原文中不存在的信息，不要推断或补充任何领域常识。
+1. **按模板输出**：输出对象只包含模板中指定的字段键，不要添加模板之外的键。
+2. **互补保留**：不同文档中的不同字段值全部保留到对应模板字段中。
+3. **一致合并**：相同字段的值完全一致时，保留任意一个。
+4. **冲突处理**：相同字段的值不一致时，保留更完整、更详细的那个。
+5. **列表去重**：同一字段中用分隔符拼接的列表，取并集并按语义去重。
+6. **长文本保留**：不同来源且内容不同的长文本，用换行符分隔拼接保留全部。
+7. **禁止编造**：不要编造原文中不存在的信息。
 
 ## 输出格式
-返回合法的 JSON，格式如下：
 {
-  "merged": { ... 合并后的扁平数据对象（所有值为字符串或数字，无嵌套无数组） ... },
-  "conflicts": [
-    {"field": "字段名", "values": ["来源文件名1: 值A", "来源文件名2: 值B"]}
-  ]
+  "merged": { "模板字段1": "值", "模板字段2": "值", ... },
+  "conflicts": [{"field": "字段名", "values": ["来源文件名1: 值A", "来源文件名2: 值B"]}]
 }
 
-冲突记录规则：
-- 仅在相同字段名的值存在实质性差异且无法通过互补合并时，才记录到 conflicts。
-- conflicts 中记录所有无法自动合并的不同值，格式为 "文件名: 值"。
-- 如果所有字段完全一致或已成功互补合并，conflicts 返回空数组。
-
 ## 输出约束
-- merged 对象必须是扁平结构：所有值为字符串或数字，不含嵌套对象 {} 和数组 []。
-- 仅输出 JSON，不要包含解释性文本或 Markdown 代码块标记。`;
+- merged 对象只包含模板列中指定的键，所有值为字符串或数字。
+- 不含嵌套对象 {} 和数组 []。
+- 仅输出纯JSON。`;
 
 /**
- * Build Phase 2 user message from a group's extraction results.
- * Formats the input data for the merge AI call.
+ * Build merge user message from a group's extraction results and optional template columns.
  */
 export function buildMergeUserMessage(
   groupKey: string,
   results: Array<{ fileName: string; data: Record<string, unknown> }>,
+  templateColumns?: Array<{ key: string; description?: string }>,
 ): string {
   const filesSection = '[\n' +
     results.map((r) => JSON.stringify({ file_name: r.fileName, extracted_data: r.data })).join(',\n') +
     '\n]';
 
-  return `以下是同一组文档（"${groupKey}"）的提取结果，请合并为一条完整记录。
+  let msg = `以下是同一组文档（"${groupKey}"）的提取结果，请合并为一条完整记录。\n\n${filesSection}`;
 
-${filesSection}`;
+  if (templateColumns && templateColumns.length > 0) {
+    msg += `\n\n输出模板列（只输出以下字段）：\n${templateColumns.map((c) => `- ${c.key}${c.description ? `: ${c.description}` : ''}`).join('\n')}`;
+  }
+
+  return msg;
 }
 
 // ---------------------------------------------------------------------------

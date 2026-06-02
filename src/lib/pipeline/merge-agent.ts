@@ -41,6 +41,7 @@ export async function mergeGroupWithAI(
   successfulResults: AlignedPerFileResult[],
   abortSignal: AbortSignal,
   customSystemPrompt?: string,
+  templateColumns?: Array<{ key: string; description?: string }>,
 ): Promise<MergedRecord> {
   // Prepare source data (data is Record<string, string> but buildMergeUserMessage accepts Record<string, unknown>)
   const sourceData = successfulResults.map((r) => ({
@@ -48,7 +49,7 @@ export async function mergeGroupWithAI(
     data: r.data! as Record<string, unknown>,
   }));
 
-  const userMessage = buildMergeUserMessage(groupKey, sourceData);
+  const userMessage = buildMergeUserMessage(groupKey, sourceData, templateColumns);
 
   const requestOptions: Record<string, unknown> = {
     model,
