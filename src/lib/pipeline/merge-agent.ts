@@ -72,7 +72,7 @@ export async function mergeGroupWithAI(
   const completion = await openai.chat.completions.create(
     requestOptions as any,
     {
-      signal: AbortSignal.any([abortSignal, AbortSignal.timeout(60_000)]),
+      signal: AbortSignal.any([abortSignal, AbortSignal.timeout(300_000)]),
     },
   );
 

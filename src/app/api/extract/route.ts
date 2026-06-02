@@ -16,7 +16,6 @@ import {
   TEXT_EXTRACTION_PREFIX,
 } from '@/lib/pipeline/prompts'
 import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
-import { normalizePostExtraction } from '@/lib/pipeline/post-normalizer'
 import type { PerFileResult } from '@/lib/pipeline/types'
 
 type OpenAIError = Error & { status?: number }
@@ -155,20 +154,29 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
   }
 }
 
-// ─── Flat validation & deterministic flatten ──────────────────────────────────
+// ─── Structure validation & deterministic flatten ───────────────────────────────
 
-function isFlat(data: Record<string, unknown>): boolean {
+/** Allow at most one-level nesting: top-level values can be objects containing only primitives. */
+function isAllowedStructure(data: Record<string, unknown>): boolean {
   for (const val of Object.values(data)) {
-    if (val !== null && typeof val === 'object') return false
+    if (val === null || val === undefined) continue
+    if (Array.isArray(val)) return false
+    if (typeof val === 'object') {
+      for (const nestedVal of Object.values(val as Record<string, unknown>)) {
+        if (nestedVal !== null && nestedVal !== undefined && typeof nestedVal === 'object') return false
+      }
+    }
   }
   return true
 }
 
-/** Flatten a nested object deterministically using dot-path keys. Arrays are joined with ';'. */
+/**
+ * Flatten nested object using hyphen-path keys (e.g. "血常规-白细胞(WBC)").
+ */
 function flattenObject(obj: Record<string, unknown>, prefix = ''): Record<string, unknown> {
   const result: Record<string, unknown> = {}
   for (const [key, val] of Object.entries(obj)) {
-    const fullKey = prefix ? `${prefix}.${key}` : key
+    const fullKey = prefix ? `${prefix}-${key}` : key
     if (val === null || val === undefined) continue
     if (Array.isArray(val)) {
       result[fullKey] = val.map((v) => typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)).join('; ')
@@ -307,7 +315,7 @@ export async function POST(request: NextRequest) {
               for (const img of parsed.images) {
                 contentParts.push({
                   type: 'image_url',
-                  image_url: { url: img.dataUrl, detail: 'auto' },
+                  image_url: { url: img.dataUrl, detail: 'high' },
                 })
               }
             }
@@ -367,9 +375,9 @@ export async function POST(request: NextRequest) {
                   ? extracted as Record<string, unknown>
                   : { result: extracted }
 
-                // Validate flat structure — flatten deterministically if nested
+                // Flatten if structure exceeds one-level nesting
                 let finalData = data
-                if (!isFlat(data)) {
+                if (!isAllowedStructure(data)) {
                   finalData = flattenObject(data)
                 }
 
@@ -386,9 +394,6 @@ export async function POST(request: NextRequest) {
                   data: finalData,
                   imageDataUrl,
                 })
-
-                // Normalize each result immediately after extraction
-                normalizePostExtraction(perFileResults[perFileResults.length - 1])
 
                 send('file_complete', {
                   fileId,

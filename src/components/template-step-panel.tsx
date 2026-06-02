@@ -21,7 +21,7 @@ import TemplatePanel from '@/components/template-panel';
 import {
   PipelinePhase,
   PipelineRow,
-  parseSSEChunks,
+  consumeSSEStream,
   renderFieldValue,
   PhaseIndicator,
   PipelineResultCard,
@@ -198,134 +198,111 @@ export default function TemplateStepPanel() {
         throw new Error(t('review.serverError', { code: response.status, text: response.statusText }));
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error(t('review.streamError'));
-
-      const decoder = new TextDecoder();
-      let buffer = '';
       let mergedGroups = 0;
       const totalGroups = snapshot.groups.length;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      await consumeSSEStream(response, (event, parsed) => {
+        switch (event) {
+          case 'phase': {
+            const phase = parsed.phase as string;
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === phase
+                  ? { ...p, status: 'active', detail: '' }
+                  : p,
+              ),
+            );
+            break;
+          }
 
-        buffer += decoder.decode(value, { stream: true });
-        const events = parseSSEChunks(buffer);
-        const lastNewline = buffer.lastIndexOf('\n\n');
-        if (lastNewline !== -1) {
-          buffer = buffer.slice(lastNewline + 2);
-        }
+          case 'schema_ready': {
+            setSchemaHeaders(parsed.headers ?? []);
+            if (parsed.aiFailed) setSchemaAlignFallback(true);
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === 'aligning'
+                  ? { ...p, status: 'done', detail: `${parsed.headers?.length ?? 0}` }
+                  : p,
+              ),
+            );
+            break;
+          }
 
-        for (const evt of events) {
-          try {
-            const parsed = JSON.parse(evt.data);
+          case 'merge_start': {
+            mergedGroups++;
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === 'merging'
+                  ? { ...p, status: 'active', detail: `${parsed.label} (${parsed.fileCount})` }
+                  : p,
+              ),
+            );
+            break;
+          }
 
-            switch (evt.event) {
-              case 'phase': {
-                const phase = parsed.phase as string;
-                setPhases((prev) =>
-                  prev.map((p) =>
-                    p.key === phase
-                      ? { ...p, status: 'active', detail: '' }
-                      : p,
-                  ),
-                );
-                break;
-              }
+          case 'group_merged': {
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === 'merging'
+                  ? {
+                      ...p,
+                      detail: t('pipeline.mergeProgress', {
+                        current: mergedGroups,
+                        total: totalGroups,
+                      }),
+                    }
+                  : p,
+              ),
+            );
+            break;
+          }
 
-              case 'schema_ready': {
-                setSchemaHeaders(parsed.headers ?? []);
-                if (parsed.aiFailed) setSchemaAlignFallback(true);
-                setPhases((prev) =>
-                  prev.map((p) =>
-                    p.key === 'aligning'
-                      ? { ...p, status: 'done', detail: `${parsed.headers?.length ?? 0}` }
-                      : p,
-                  ),
-                );
-                break;
-              }
+          case 'all_done': {
+            setPhases((prev) =>
+              prev.map((p) => ({ ...p, status: 'done' })),
+            );
+            setProgress({ status: 'done' });
 
-              case 'merge_start': {
-                mergedGroups++;
-                setPhases((prev) =>
-                  prev.map((p) =>
-                    p.key === 'merging'
-                      ? { ...p, status: 'active', detail: `${parsed.label} (${parsed.fileCount})` }
-                      : p,
-                  ),
-                );
-                break;
-              }
+            const rows: PipelineRow[] = (parsed.rows ?? []).map((r: any) => ({
+              id: r.id ?? '',
+              label: r.label ?? '',
+              data: r.data ?? {},
+              sourceFiles: r.sourceFiles ?? [],
+              isMerged: r.isMerged ?? false,
+              fieldConsistency: r.fieldConsistency,
+              mergeMethod: r.mergeMethod,
+            }));
+            setPipelineRows(rows);
 
-              case 'group_merged': {
-                setPhases((prev) =>
-                  prev.map((p) =>
-                    p.key === 'merging'
-                      ? {
-                          ...p,
-                          detail: t('pipeline.mergeProgress', {
-                            current: mergedGroups,
-                            total: totalGroups,
-                          }),
-                        }
-                      : p,
-                  ),
-                );
-                break;
-              }
+            setMergedExportData(
+              rows.map((row) => ({
+                label: row.label,
+                data: row.data,
+                sourceFiles: row.sourceFiles,
+                success: true,
+              })),
+            );
+            break;
+          }
 
-              case 'all_done': {
-                setPhases((prev) =>
-                  prev.map((p) => ({ ...p, status: 'done' })),
-                );
-                setProgress({ status: 'done' });
-
-                const rows: PipelineRow[] = (parsed.rows ?? []).map((r: any) => ({
-                  id: r.id ?? '',
-                  label: r.label ?? '',
-                  data: r.data ?? {},
-                  sourceFiles: r.sourceFiles ?? [],
-                  isMerged: r.isMerged ?? false,
-                  fieldConsistency: r.fieldConsistency,
-                  mergeMethod: r.mergeMethod,
-                }));
-                setPipelineRows(rows);
-
-                setMergedExportData(
-                  rows.map((row) => ({
-                    label: row.label,
-                    data: row.data,
-                    sourceFiles: row.sourceFiles,
-                    success: true,
-                  })),
-                );
-                break;
-              }
-
-              case 'error': {
-                setPhases((prev) =>
-                  prev.map((p) => {
-                    if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
-                    return p;
-                  }),
-                );
-                setProgress({ status: 'error' });
-                addResult({
-                  fileId: 'system',
-                  fileName: t('review.systemError'),
-                  success: false,
-                  error: parsed.message ?? t('review.unknownError'),
-                });
-                break;
-              }
-            }
-          } catch {
-            // ignore JSON parse errors
+          case 'error': {
+            setPhases((prev) =>
+              prev.map((p) => {
+                if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
+                return p;
+              }),
+            );
+            setProgress({ status: 'error' });
+            addResult({
+              fileId: 'system',
+              fileName: t('review.systemError'),
+              success: false,
+              error: parsed.message ?? t('review.unknownError'),
+            });
+            break;
           }
         }
-      }
+      });
 
       // Stream ended without explicit all_done
       if (useStore.getState().progress.status === 'aligning_merging') {

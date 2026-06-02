@@ -36,7 +36,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { parseSSEChunks } from '@/lib/pipeline-helpers';
+import { consumeSSEStream } from '@/lib/pipeline-helpers';
 
 // ---------------------------------------------------------------------------
 // Phase type for this panel
@@ -169,91 +169,65 @@ export default function MergeKeysPanel() {
         throw new Error(err.error || `Server error ${response.status}`);
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('Unable to read response stream');
+      await consumeSSEStream(response, (event, parsed) => {
+        switch (event) {
+          case 'phase': {
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === parsed.phase
+                  ? { ...p, status: 'active' }
+                  : p,
+              ),
+            );
+            break;
+          }
 
-      const decoder = new TextDecoder();
-      let buffer = '';
+          case 'keys_ready': {
+            setKeyAlignmentResult({
+              fieldMapping: parsed.fieldMapping ?? {},
+              fieldOrder: parsed.fieldOrder ?? [],
+              aiFailed: false,
+            });
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === 'aligning'
+                  ? { ...p, status: 'done' }
+                  : p,
+              ),
+            );
+            break;
+          }
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+          case 'all_done': {
+            setPhases([...ALL_DONE_PHASES]);
+            setExtractionSnapshot({
+              results: (parsed.alignedResults ?? []).map((r: any) => ({
+                fileId: r.fileId,
+                fileName: r.fileName,
+                groupId: r.groupId,
+                success: r.success,
+                data: r.data,
+                error: r.error,
+              })),
+              groups: snapshot.groups,
+            });
+            setProgress({ status: 'keys_aligned' });
+            break;
+          }
 
-        buffer += decoder.decode(value, { stream: true });
-        const events = parseSSEChunks(buffer);
-        const lastNewline = buffer.lastIndexOf('\n\n');
-        if (lastNewline !== -1) {
-          buffer = buffer.slice(lastNewline + 2);
-        }
-
-        for (const evt of events) {
-          try {
-            const parsed = JSON.parse(evt.data);
-
-            switch (evt.event) {
-              case 'phase': {
-                setPhases((prev) =>
-                  prev.map((p) =>
-                    p.key === parsed.phase
-                      ? { ...p, status: 'active' }
-                      : p,
-                  ),
-                );
-                break;
-              }
-
-              case 'keys_ready': {
-                setKeyAlignmentResult({
-                  fieldMapping: parsed.fieldMapping ?? {},
-                  fieldOrder: parsed.fieldOrder ?? [],
-                  aiFailed: false,
-                });
-                // Mark aligning as done
-                setPhases((prev) =>
-                  prev.map((p) =>
-                    p.key === 'aligning'
-                      ? { ...p, status: 'done' }
-                      : p,
-                  ),
-                );
-                break;
-              }
-
-              case 'all_done': {
-                setPhases([...ALL_DONE_PHASES]);
-                // Replace extraction snapshot with aligned results
-                setExtractionSnapshot({
-                  results: (parsed.alignedResults ?? []).map((r: any) => ({
-                    fileId: r.fileId,
-                    fileName: r.fileName,
-                    groupId: r.groupId,
-                    success: r.success,
-                    data: r.data,
-                    error: r.error,
-                  })),
-                  groups: snapshot.groups,
-                });
-                setProgress({ status: 'keys_aligned' });
-                break;
-              }
-
-              case 'error': {
-                setError(parsed.message ?? 'Unknown error');
-                setProgress({ status: 'extraction_done' });
-                setPhases((prev) =>
-                  prev.map((p) => {
-                    if (p.status === 'active') return { ...p, status: 'pending' };
-                    return p;
-                  }),
-                );
-                break;
-              }
-            }
-          } catch {
-            // ignore JSON parse errors
+          case 'error': {
+            setError(parsed.message ?? 'Unknown error');
+            setProgress({ status: 'extraction_done' });
+            setPhases((prev) =>
+              prev.map((p) => {
+                if (p.status === 'active') return { ...p, status: 'pending' };
+                return p;
+              }),
+            );
+            break;
           }
         }
-      }
+      });
 
       // Stream ended without explicit all_done
       if (useStore.getState().progress.status === 'keys_aligning') {
