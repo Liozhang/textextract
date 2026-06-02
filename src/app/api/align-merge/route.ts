@@ -3,7 +3,7 @@ import OpenAI from 'openai'
 
 export const maxDuration = 300
 
-import { mergeGroupWithAI, alignToTemplateWithAI } from '@/lib/pipeline/merge-agent'
+import { mergeGroupWithAI, alignToTemplateWithAI, normalizeValue } from '@/lib/pipeline/merge-agent'
 import { isPrivateHost, sseEvent, workerPool, resolveApiSettings } from '@/lib/api-utils'
 import { MERGE_SYSTEM_MESSAGE, TEMPLATE_ALIGN_SYSTEM_MESSAGE } from '@/lib/pipeline/prompts'
 import type { PerFileResult, MergedRecord } from '@/lib/pipeline/types'
@@ -24,6 +24,8 @@ interface AlignMergeRequestBody {
     apiKey?: string
     model?: string
   }
+  /** When provided, only process these groups (used for single-row retry) */
+  retryGroupIds?: string[]
 }
 
 // ─── Merge fallback helper (Phase 1: no template columns) ───────────────────
@@ -42,10 +44,15 @@ async function mergeGroupWithFallback(
   if (successful.length <= 1) {
     const r = groupResults.find((r) => r.success) || groupResults[0]
     const rawData = r?.data || {}
+    // Normalize values in single-file passthrough too
+    const normalizedData: Record<string, string> = {};
+    for (const [k, v] of Object.entries(rawData)) {
+      normalizedData[k] = normalizeValue(v);
+    }
     return [{
       groupId: group.groupId,
       groupKey: group.groupKey,
-      data: rawData,
+      data: normalizedData,
       imageDataUrl: r?.imageDataUrl,
       sourceFileNames: successful.length > 0 ? successful.map((r) => r.fileName) : [r?.fileName || ''],
       mergedCount: successful.length,
@@ -66,7 +73,7 @@ async function mergeGroupWithFallback(
         groupId: r.groupId,
         success: true,
         data: Object.fromEntries(
-          Object.entries(r.data!).map(([k, v]) => [k, v != null ? String(v) : '']),
+          Object.entries(r.data!).map(([k, v]) => [k, normalizeValue(v)]),
         ) as Record<string, string>,
         imageDataUrl: r.imageDataUrl,
       })),
@@ -100,11 +107,17 @@ export async function POST(request: NextRequest) {
     const body: AlignMergeRequestBody = await request.json()
     const {
       extractionData,
-      groups,
+      groups: allGroups,
       columns: templateColumns,
       prompts: customPrompts,
       apiSettings: apiSettingsOverride,
+      retryGroupIds,
     } = body
+
+    const isRetry = retryGroupIds && retryGroupIds.length > 0
+    const groups = isRetry
+      ? allGroups.filter((g) => retryGroupIds.includes(g.groupId))
+      : allGroups
 
     if (!extractionData || extractionData.length === 0) {
       return new Response(JSON.stringify({ error: '没有提取数据' }), {
@@ -113,7 +126,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    if (!groups || groups.length === 0) {
+    if (!allGroups || allGroups.length === 0) {
       return new Response(JSON.stringify({ error: '没有文件分组信息' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -195,25 +208,35 @@ export async function POST(request: NextRequest) {
               successCount: groupResults.filter((r) => r.success).length,
             })
 
-            const groupRecords = await mergeGroupWithFallback(
-              openai,
-              apiSettings.model,
-              group,
-              groupResults,
-              AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]),
-              mergePrompt,
-            )
+            try {
+              const groupRecords = await mergeGroupWithFallback(
+                openai,
+                apiSettings.model,
+                group,
+                groupResults,
+                AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]),
+                mergePrompt,
+              )
 
-            send('group_merged', {
-              groupId: group.groupId,
-              groupKey: group.groupKey,
-              sourceFileNames: groupRecords[0]?.sourceFileNames ?? [],
-              mergedCount: groupRecords.length,
-              mergeMethod: groupRecords[0]?.mergeMethod ?? 'single',
-              conflicts: groupRecords.flatMap((r) => r.conflicts),
-            })
+              send('group_merged', {
+                groupId: group.groupId,
+                groupKey: group.groupKey,
+                sourceFileNames: groupRecords[0]?.sourceFileNames ?? [],
+                mergedCount: groupRecords.length,
+                mergeMethod: groupRecords[0]?.mergeMethod ?? 'single',
+                conflicts: groupRecords.flatMap((r) => r.conflicts),
+              })
 
-            mergedRecords.push(...groupRecords)
+              mergedRecords.push(...groupRecords)
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : '未知错误'
+              send('group_error', {
+                phase: 'merging',
+                groupId: group.groupId,
+                groupKey: group.groupKey,
+                message: `合并失败: ${msg}`,
+              })
+            }
           })
 
           // ── Phase 2: Template alignment (if template columns exist) ───────
@@ -234,24 +257,34 @@ export async function POST(request: NextRequest) {
                 entryCount: groupMerged.length,
               })
 
-              const aligned = await alignToTemplateWithAI(
-                openai,
-                apiSettings.model,
-                group.groupKey,
-                group.groupId,
-                groupMerged,
-                templateColsForAI!,
-                AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]),
-                templateAlignPrompt,
-              )
+              try {
+                const aligned = await alignToTemplateWithAI(
+                  openai,
+                  apiSettings.model,
+                  group.groupKey,
+                  group.groupId,
+                  groupMerged,
+                  templateColsForAI!,
+                  AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]),
+                  templateAlignPrompt,
+                )
 
-              send('group_aligned', {
-                groupId: group.groupId,
-                groupKey: group.groupKey,
-                entryCount: aligned.length,
-              })
+                send('group_aligned', {
+                  groupId: group.groupId,
+                  groupKey: group.groupKey,
+                  entryCount: aligned.length,
+                })
 
-              alignedRecords.push(...aligned)
+                alignedRecords.push(...aligned)
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : '未知错误'
+                send('group_error', {
+                  phase: 'aligning',
+                  groupId: group.groupId,
+                  groupKey: group.groupKey,
+                  message: `模板对齐失败: ${msg}`,
+                })
+              }
             })
 
             finalRecords = alignedRecords
@@ -276,9 +309,10 @@ export async function POST(request: NextRequest) {
               data[h] = record.data[h] ?? null;
             }
 
-            // Build fieldConsistency from conflicts
+            // Build fieldConsistency from conflicts (skip meta fields prefixed with _)
             const fieldConsistency: Record<string, boolean> = {};
             for (const conflict of record.conflicts) {
+              if (conflict.fieldName.startsWith('_')) continue;
               fieldConsistency[conflict.fieldName] = false;
             }
             for (const h of Object.keys(data)) {
@@ -301,9 +335,10 @@ export async function POST(request: NextRequest) {
 
           send('all_done', {
             totalFiles: extractionData.length,
-            totalGroups: groups.length,
+            totalGroups: allGroups.length,
             mergedGroups: finalRecords.length,
             rows,
+            ...(isRetry ? { isRetry: true } : {}),
           })
 
           controller.close()

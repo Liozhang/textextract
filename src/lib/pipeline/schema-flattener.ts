@@ -1,4 +1,4 @@
-import type { PerFileResult, AlignedPerFileResult, FieldPathInfo, FlattenedSchema, FlattenRule } from './types';
+import type { PerFileResult, AlignedPerFileResult, FieldPathInfo, FlattenedSchema, FlattenRule, ConflictInfo } from './types';
 
 // ---------------------------------------------------------------------------
 // Collect field paths from extraction results
@@ -16,12 +16,28 @@ export function collectFieldPaths(results: PerFileResult[]): FieldPathInfo[] {
     walkPaths(r.data, '', pathMap);
   }
 
-  return Array.from(pathMap.entries()).map(([path, info]) => ({
-    path,
-    count: info.count,
-    sampleValues: info.samples.slice(0, 3),
-    type: info.type,
-  }));
+  const allPaths = Array.from(pathMap.keys());
+
+  return Array.from(pathMap.entries()).map(([path, info]) => {
+    // Compute sibling fields: other leaf paths sharing the same parent prefix
+    const lastDot = path.lastIndexOf('.');
+    let siblings: string[] | undefined;
+    if (lastDot > 0) {
+      const parentPrefix = path.slice(0, lastDot);
+      siblings = allPaths
+        .filter((p) => p !== path && p.startsWith(parentPrefix + '.') && p.lastIndexOf('.') === lastDot)
+        .map((p) => p.slice(lastDot + 1));
+      if (siblings.length === 0) siblings = undefined;
+    }
+
+    return {
+      path,
+      count: info.count,
+      sampleValues: info.samples.slice(0, 3),
+      type: info.type,
+      ...(siblings ? { siblingFields: siblings } : {}),
+    };
+  });
 }
 
 function walkPaths(
@@ -123,9 +139,24 @@ export function applyFlattenedSchema(
   }
 
   const flatData: Record<string, string> = {};
+  const conflicts: ConflictInfo[] = [];
+
   for (const [name, values] of candidates) {
-    const best = values.filter((v) => v).sort((a, b) => b.length - a.length)[0] || '';
-    flatData[name] = best;
+    const nonEmpty = values.filter((v) => v);
+    if (nonEmpty.length === 0) {
+      flatData[name] = '';
+    } else if (nonEmpty.length === 1) {
+      flatData[name] = nonEmpty[0];
+    } else {
+      const unique = Array.from(new Set(nonEmpty));
+      if (unique.length === 1) {
+        flatData[name] = unique[0];
+      } else {
+        // Multiple distinct values — preserve all and flag as conflict
+        flatData[name] = unique.join(' | ');
+        conflicts.push({ fieldName: name, values: unique });
+      }
+    }
   }
 
   return {
@@ -135,7 +166,7 @@ export function applyFlattenedSchema(
     success: true,
     data: flatData,
     imageDataUrl: result.imageDataUrl,
-    rawData: result.data,
+    conflicts,
   };
 }
 

@@ -62,7 +62,6 @@ export interface ExportSettings {
 export interface PromptSettings {
   extraction: string;
   keyAlign: string;
-  schemaAlign: string;
   merge: string;
   templateAlign: string;
 }
@@ -186,7 +185,6 @@ const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
 const DEFAULT_PROMPT_SETTINGS: PromptSettings = {
   extraction: '',
   keyAlign: '',
-  schemaAlign: '',
   merge: '',
   templateAlign: '',
 };
@@ -356,15 +354,7 @@ export const useStore = create<AppState>()(
       },
       // Skip hydration on server; the `mounted` flag is used client-side
       skipHydration: true,
-      // Version migration: clean up old template data from version 0
-      version: 1,
-      migrate: (persisted, version) => {
-        if (version === 0) {
-          const p = persisted as any;
-          delete p.template;
-        }
-        return persisted as any;
-      },
+      version: 2,
     },
   ),
 );

@@ -160,6 +160,7 @@ export async function POST(request: NextRequest) {
               count: fp.count,
               sample_values: fp.sampleValues,
               type: fp.type,
+              ...(fp.siblingFields ? { sibling_fields: fp.siblingFields } : {}),
             }))
             .join(',\n  ')
 

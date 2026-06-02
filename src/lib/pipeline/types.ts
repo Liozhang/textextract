@@ -100,7 +100,7 @@ export interface AlignedPerFileResult {
   data?: Record<string, string>;       // always flat, always string values
   imageDataUrl?: string;
   error?: string;
-  rawData?: Record<string, unknown>;   // original nested data for JSON export
+  conflicts?: ConflictInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -112,4 +112,6 @@ export interface FieldPathInfo {
   count: number;
   sampleValues: unknown[];
   type: 'string' | 'number' | 'boolean' | 'measurement' | 'array' | 'object' | 'other';
+  /** Other leaf field names sharing the same parent path (excludes self) */
+  siblingFields?: string[];
 }

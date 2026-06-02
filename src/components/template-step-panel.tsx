@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   Sparkles,
   ArrowRight,
+  RefreshCw,
 } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
@@ -82,6 +83,7 @@ export default function TemplateStepPanel() {
 
   const abortRef = useRef<AbortController | null>(null);
   const [showDetails, setShowDetails] = useState(false);
+  const [retryingGroupId, setRetryingGroupId] = useState<string | null>(null);
 
   // Pipeline result state
   const [pipelineRows, setPipelineRows] = useState<PipelineRow[]>([]);
@@ -94,6 +96,7 @@ export default function TemplateStepPanel() {
   const isAligning = progress.status === 'aligning_merging';
   const isExtractionDone = progress.status === 'extraction_done';
   const isDone = progress.status === 'done';
+  const hasTemplateColumns = useStore((s) => s.templateColumns.length > 0);
 
   const mergedHeaders = useMemo(() => {
     if (schemaHeaders.length > 0) return schemaHeaders;
@@ -297,6 +300,16 @@ export default function TemplateStepPanel() {
             break;
           }
 
+          case 'group_error': {
+            addResult({
+              fileId: `group-${parsed.groupId}`,
+              fileName: parsed.groupKey || t('review.systemError'),
+              success: false,
+              error: parsed.message ?? t('review.unknownError'),
+            });
+            break;
+          }
+
           case 'all_done': {
             setPhases((prev) =>
               prev.map((p) => ({ ...p, status: 'done' })),
@@ -393,6 +406,93 @@ export default function TemplateStepPanel() {
   }, [setProgress]);
 
   // ------------------------------------------------------------------
+  // Retry single group template alignment
+  // ------------------------------------------------------------------
+  const handleRetryGroup = useCallback(async (groupId: string) => {
+    const snapshot = useStore.getState().extractionSnapshot;
+    const currentColumns = useStore.getState().templateColumns;
+    if (!snapshot || currentColumns.length === 0) return;
+
+    setRetryingGroupId(groupId);
+
+    const body = {
+      extractionData: snapshot.results.map((r) => ({
+        fileId: r.fileId,
+        fileName: r.fileName,
+        groupId: r.groupId,
+        success: r.success,
+        data: r.data,
+        error: r.error,
+      })),
+      groups: snapshot.groups.map((g) => ({ groupId: g.groupId, groupKey: g.groupKey })),
+      columns: currentColumns,
+      retryGroupIds: [groupId],
+      prompts: {
+        merge: useStore.getState().promptSettings.merge || undefined,
+        templateAlign: useStore.getState().promptSettings.templateAlign || undefined,
+      },
+      ...(useStore.getState().apiSettings.baseUrl || useStore.getState().apiSettings.apiKey || useStore.getState().apiSettings.model ? {
+        apiSettings: useStore.getState().apiSettings,
+      } : {}),
+    };
+
+    try {
+      const response = await fetch('/api/align-merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        throw new Error(t('review.serverError', { code: response.status, text: response.statusText }));
+      }
+
+      await consumeSSEStream(response, (event, parsed) => {
+        switch (event) {
+          case 'error': {
+            addResult({
+              fileId: 'system',
+              fileName: t('review.systemError'),
+              success: false,
+              error: parsed.message ?? t('review.unknownError'),
+            });
+            break;
+          }
+
+          case 'all_done': {
+            const newRows: PipelineRow[] = (parsed.rows ?? []).map((r: any) => ({
+              id: r.id ?? '',
+              label: r.label ?? '',
+              data: r.data ?? {},
+              sourceFiles: r.sourceFiles ?? [],
+              isMerged: r.isMerged ?? false,
+              fieldConsistency: r.fieldConsistency,
+              mergeMethod: r.mergeMethod,
+            }));
+
+            setPipelineRows((prev) => {
+              const other = prev.filter((r) => r.id !== groupId && !r.id.startsWith(groupId + '-'));
+              return [...other, ...newRows];
+            });
+            break;
+          }
+        }
+      });
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name !== 'AbortError') {
+        addResult({
+          fileId: 'system',
+          fileName: t('review.systemError'),
+          success: false,
+          error: err.message,
+        });
+      }
+    } finally {
+      setRetryingGroupId(null);
+    }
+  }, [t, addResult]);
+
+  // ------------------------------------------------------------------
   // Render
   // ------------------------------------------------------------------
   return (
@@ -414,7 +514,7 @@ export default function TemplateStepPanel() {
         )}
 
         {/* ---------- Extraction context (collapsible, default closed) ---------- */}
-        {(isExtractionDone || isDone || isAligning) && extractionSummary && (
+        {(isExtractionDone || isDone) && extractionSummary && (
           <Card>
             <Collapsible defaultOpen>
               <CollapsibleTrigger className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium hover:bg-muted/50 rounded-t-md">
@@ -574,9 +674,22 @@ export default function TemplateStepPanel() {
                                 {row.isMerged && (
                                   <GitMerge className="size-3.5 text-amber-500" />
                                 )}
-                                <span className="truncate max-w-[120px]">
+                                <span className="truncate max-w-[100px]">
                                   {row.label}
                                 </span>
+                                {hasTemplateColumns && (
+                                  <button
+                                    type="button"
+                                    className="ml-0.5 p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                                    title={t('review.retryAlign')}
+                                    onClick={() => handleRetryGroup(row.id.includes('-') ? row.id.split('-')[0] : row.id)}
+                                    disabled={retryingGroupId !== null}
+                                  >
+                                    <RefreshCw
+                                      className={`size-3 ${retryingGroupId === (row.id.includes('-') ? row.id.split('-')[0] : row.id) ? 'animate-spin' : ''}`}
+                                    />
+                                  </button>
+                                )}
                               </div>
                               {row.isMerged && row.sourceFiles.length > 1 && (
                                 <div className="text-[10px] text-muted-foreground mt-0.5 max-w-[140px] truncate">

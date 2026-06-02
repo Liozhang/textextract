@@ -35,7 +35,6 @@ import { Label } from '@/components/ui/label';
 const PHASES: Array<{ key: keyof PromptSettings; defaultKey: keyof typeof DEFAULT_PROMPTS }> = [
   { key: 'extraction', defaultKey: 'extraction' },
   { key: 'keyAlign', defaultKey: 'keyAlign' },
-  { key: 'schemaAlign', defaultKey: 'schemaAlign' },
   { key: 'merge', defaultKey: 'merge' },
   { key: 'templateAlign', defaultKey: 'templateAlign' },
 ];
@@ -206,7 +205,7 @@ export default function PromptSettings() {
             <AlertDialogAction
               onClick={() => {
                 resetPromptSettings();
-                setLocalValues({ extraction: '', keyAlign: '', schemaAlign: '', merge: '', templateAlign: '' });
+                setLocalValues({ extraction: '', keyAlign: '', merge: '', templateAlign: '' });
                 setShowResetConfirm(false);
               }}
             >

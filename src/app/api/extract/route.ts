@@ -351,19 +351,16 @@ export async function POST(request: NextRequest) {
             }
 
             let lastError = ''
+            let retryMessages: OpenAI.ChatCompletionMessageParam[] = [...baseMessages]
 
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
               try {
                 if (attempt > 1) {
                   send('file_retry', { fileId, fileName, attempt })
-                  // Exponential backoff: 1s, 2s, 4s
-                  const delayMs = Math.min(4000, 1000 * Math.pow(2, attempt - 2))
-                  await new Promise((resolve) => setTimeout(resolve, delayMs))
                 }
 
-                // Each retry uses a fresh messages array (no conversation context)
                 const completion = await openai.chat.completions.create(
-                  { ...requestOptions, messages: baseMessages } as any,
+                  { ...requestOptions, messages: retryMessages } as any,
                   { signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]) },
                 )
 
@@ -378,8 +375,21 @@ export async function POST(request: NextRequest) {
                   fullContent = msg?.content || ''
                 }
 
-                // Parse JSON with 5-layer fallback
-                const extracted = parseJsonResponse(fullContent)
+                // Parse JSON — separate try/catch for parse errors vs API errors
+                let extracted: unknown
+                try {
+                  extracted = parseJsonResponse(fullContent)
+                } catch (parseErr) {
+                  // Parse failed — append feedback to conversation for next retry
+                  retryMessages = [
+                    ...baseMessages,
+                    { role: 'assistant' as const, content: fullContent },
+                    { role: 'user' as const, content: `上一次返回的不是合法 JSON。错误：${parseErr instanceof Error ? parseErr.message : '解析失败'}。请只返回纯 JSON 对象，不要包含 markdown 标记或解释文本。` },
+                  ]
+                  lastError = `JSON 解析失败: ${parseErr instanceof Error ? parseErr.message : ''}`
+                  continue
+                }
+
                 const data = (extracted && typeof extracted === 'object' && !Array.isArray(extracted))
                   ? extracted as Record<string, unknown>
                   : { result: extracted }
@@ -412,9 +422,11 @@ export async function POST(request: NextRequest) {
                   data: perFileResults[perFileResults.length - 1].data,
                 })
 
-                lastError = '' // clear on success
+                lastError = ''
                 break
               } catch (err) {
+                // API/network error — reset conversation context + backoff
+                retryMessages = [...baseMessages]
                 if (err instanceof Error) {
                   const apiErr = err as OpenAIError
                   if (apiErr.status) {
@@ -422,6 +434,9 @@ export async function POST(request: NextRequest) {
                     // Extra wait on rate limit before next retry
                     if (apiErr.status === 429) {
                       await new Promise((resolve) => setTimeout(resolve, 5000))
+                    } else {
+                      const delayMs = Math.min(4000, 1000 * Math.pow(2, attempt - 1))
+                      await new Promise((resolve) => setTimeout(resolve, delayMs))
                     }
                   } else if (err.name === 'AbortError' || err.name === 'TimeoutError') {
                     lastError = `请求超时 (${Math.round(perCallTimeout / 1000)}s)`
