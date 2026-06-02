@@ -3,7 +3,6 @@ import OpenAI from 'openai'
 
 export const maxDuration = 300
 
-import { alignSchemaWithAI, alignSchema } from '@/lib/pipeline/schema-aligner'
 import {
   collectFieldPaths,
   applyFlattenedSchemaToResults,
@@ -11,6 +10,7 @@ import {
 import { KEY_ALIGN_SYSTEM_MESSAGE } from '@/lib/pipeline/prompts'
 import { parseJsonResponse } from '@/lib/pipeline/json-parser'
 import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
+import { isPrivateHost, sseEvent } from '@/lib/api-utils'
 import type { PerFileResult, FieldPathInfo, FlattenedSchema, FlattenRule } from '@/lib/pipeline/types'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -22,36 +22,6 @@ interface AlignKeysRequestBody {
   prompts?: {
     keyAlign?: string
   }
-}
-
-// ─── Security: URL validation ────────────────────────────────────────────────
-
-const PRIVATE_HOSTS = [
-  /^localhost$/i,
-  /^127(?:\.\d{1,3}){3}$/,
-  /^10(?:\.\d{1,3}){3}$/,
-  /^172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}$/,
-  /^192\.168(?:\.\d{1,3}){2}$/,
-  /^169\.254(?:\.\d{1,3}){2}$/,
-  /^0\.0\.0\.0$/,
-  /^::1$/,
-  /^\[::1\]$/,
-]
-
-function isPrivateHost(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return true
-    return PRIVATE_HOSTS.some((re) => re.test(parsed.hostname))
-  } catch {
-    return true
-  }
-}
-
-// ─── Helper: send SSE event ─────────────────────────────────────────────────
-
-function sseEvent(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
 // ─── Infer flatten rule from type ────────────────────────────────────────────
@@ -186,53 +156,41 @@ export async function POST(request: NextRequest) {
 
       let schema: FlattenedSchema
       let fieldActions: Record<string, string> = {}
-      let aiFailed = false
 
-      try {
-        const requestOptions: Record<string, unknown> = {
-          model,
-          messages: [
-            { role: 'system', content: effectivePrompt },
-            { role: 'user', content: userMessage },
-          ],
-          temperature: 0.1,
-          stream: false,
-        }
+      const requestOptions: Record<string, unknown> = {
+        model,
+        messages: [
+          { role: 'system', content: effectivePrompt },
+          { role: 'user', content: userMessage },
+        ],
+        temperature: 0.1,
+        stream: false,
+      }
 
-        if (supportsJsonResponseFormat(model)) {
-          requestOptions.response_format = { type: 'json_object' }
-        }
+      if (supportsJsonResponseFormat(model)) {
+        requestOptions.response_format = { type: 'json_object' }
+      }
 
-        if (isReasoningModel(model)) {
-          requestOptions.reasoning_effort = 'low'
-        }
+      if (isReasoningModel(model)) {
+        requestOptions.reasoning_effort = 'low'
+      }
 
-        const completion = await openai.chat.completions.create(
-          requestOptions as any,
-          { signal: abortSignal },
-        )
+      const completion = await openai.chat.completions.create(
+        requestOptions as any,
+        { signal: abortSignal },
+      )
 
-        const msg = completion.choices?.[0]?.message
-        const content = typeof msg?.content === 'string' ? msg.content : ''
-        const parsed = parseJsonResponse(content)
+      const msg = completion.choices?.[0]?.message
+      const content = typeof msg?.content === 'string' ? msg.content : ''
+      const parsed = parseJsonResponse(content)
 
-        const alignResult = parseAlignResult(parsed, fieldPaths)
-        fieldActions = alignResult.fieldActions
+      const alignResult = parseAlignResult(parsed, fieldPaths)
+      fieldActions = alignResult.fieldActions
 
-        schema = {
-          field_mapping: alignResult.fieldMapping,
-          field_order: alignResult.fieldOrder,
-          flatten_rules: alignResult.flattenRules,
-        }
-      } catch (err) {
-        console.error('[align-keys] AI alignment failed:', err)
-        const fallbackSchema = alignSchema(fieldPaths)
-        schema = {
-          field_mapping: fallbackSchema.field_mapping,
-          field_order: fallbackSchema.field_order,
-          flatten_rules: fallbackSchema.flatten_rules,
-        }
-        aiFailed = true
+      schema = {
+        field_mapping: alignResult.fieldMapping,
+        field_order: alignResult.fieldOrder,
+        flatten_rules: alignResult.flattenRules,
       }
 
       // Send keys_ready event
@@ -240,7 +198,7 @@ export async function POST(request: NextRequest) {
         fieldMapping: schema.field_mapping,
         fieldOrder: schema.field_order,
         fieldActions,
-        aiFailed,
+        aiFailed: false,
       })))
 
       // Phase 3: Apply schema to results

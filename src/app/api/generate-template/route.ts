@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import OpenAI from 'openai'
 import { supportsJsonResponseFormat } from '@/lib/merge-utils'
+import { isPrivateHost } from '@/lib/api-utils'
 
 const TEMPLATE_SYSTEM_PROMPT = `你是一个输出模板设计助手。根据用户提供的模板字段描述，为每个字段生成结构化的列定义。
 
@@ -14,18 +15,6 @@ const TEMPLATE_SYSTEM_PROMPT = `你是一个输出模板设计助手。根据用
 {"columns": [{"key": "字段名", "type": "string", "description": "描述", "example": "示例值"}]}
 
 仅返回 JSON 对象，不要任何解释性文本。`
-
-function isPrivateHost(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return true
-    const hostname = parsed.hostname
-    const privatePatterns = [/^localhost$/i, /^127(?:\.\d{1,3}){3}$/, /^10(?:\.\d{1,3}){3}$/, /^172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}$/, /^192\.168(?:\.\d{1,3}){2}$/, /^169\.254(?:\.\d{1,3}){2}$/, /^0\.0\.0\.0$/, /^::1$/]
-    return privatePatterns.some((re) => re.test(hostname))
-  } catch {
-    return true
-  }
-}
 
 export async function POST(request: NextRequest) {
   try {

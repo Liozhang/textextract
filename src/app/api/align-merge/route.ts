@@ -4,6 +4,7 @@ import OpenAI from 'openai'
 export const maxDuration = 300
 
 import { mergeGroupWithAI } from '@/lib/pipeline/merge-agent'
+import { isPrivateHost, sseEvent, workerPool } from '@/lib/api-utils'
 import { MERGE_SYSTEM_MESSAGE } from '@/lib/pipeline/prompts'
 import type { PerFileResult, MergedRecord } from '@/lib/pipeline/types'
 import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
@@ -24,56 +25,6 @@ interface AlignMergeRequestBody {
   prompts?: {
     merge?: string
   }
-}
-
-// ─── Security: URL validation ────────────────────────────────────────────────
-
-const PRIVATE_HOSTS = [
-  /^localhost$/i,
-  /^127(?:\.\d{1,3}){3}$/,
-  /^10(?:\.\d{1,3}){3}$/,
-  /^172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}$/,
-  /^192\.168(?:\.\d{1,3}){2}$/,
-  /^169\.254(?:\.\d{1,3}){2}$/,
-  /^0\.0\.0\.0$/,
-  /^::1$/,
-  /^\[::1\]$/,
-]
-
-function isPrivateHost(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return true
-    return PRIVATE_HOSTS.some((re) => re.test(parsed.hostname))
-  } catch {
-    return true
-  }
-}
-
-// ─── Helper: send SSE event ─────────────────────────────────────────────────
-
-function sseEvent(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
-}
-
-// ─── Worker pool for concurrent merge processing ─────────────────────────
-
-async function workerPool<T>(
-  items: T[],
-  concurrency: number,
-  handler: (item: T, index: number) => Promise<void>,
-): Promise<void> {
-  let nextIndex = 0
-
-  async function worker(): Promise<void> {
-    while (nextIndex < items.length) {
-      const index = nextIndex++
-      await handler(items[index], index)
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
-  await Promise.all(workers)
 }
 
 // ─── Merge fallback helper ──────────────────────────────────────────────────

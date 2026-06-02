@@ -409,14 +409,3 @@ function normalizePrimitiveValue(key: string, val: unknown): unknown {
 
   return val;
 }
-
-// ---------------------------------------------------------------------------
-// Batch normalization
-// ---------------------------------------------------------------------------
-
-/**
- * Normalize all PerFileResults in an array.
- */
-export function normalizeAllResults(results: PerFileResult[]): PerFileResult[] {
-  return results.map(normalizePostExtraction);
-}

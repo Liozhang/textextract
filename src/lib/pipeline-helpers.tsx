@@ -56,10 +56,14 @@ export interface PipelinePhase {
 // SSE helpers
 // ---------------------------------------------------------------------------
 
-/** Parse SSE text into { event, data } chunks. */
+/** Parse SSE text into { event, data } chunks. Only returns complete events (terminated by \n\n). */
 export function parseSSEChunks(text: string): { event: string; data: string }[] {
   const events: { event: string; data: string }[] = [];
-  const blocks = text.split('\n\n').filter(Boolean);
+  // Find last complete event boundary (ending with \n\n)
+  const lastBoundary = text.lastIndexOf('\n\n');
+  if (lastBoundary === -1) return events;
+  const complete = text.slice(0, lastBoundary);
+  const blocks = complete.split('\n\n');
   for (const block of blocks) {
     let event = '';
     let data = '';
@@ -123,7 +127,6 @@ export function renderFieldValue(value: unknown): string {
 export function formatMergeMethod(method: string | undefined, t: (key: string) => string): { label: string; isFallback: boolean } {
   switch (method) {
     case 'ai': return { label: t('review.mergeMethodAi'), isFallback: false };
-    case 'fallback_strategy': return { label: t('review.mergeMethodFallback'), isFallback: true };
     case 'single': return { label: t('review.mergeMethodSingle'), isFallback: false };
     default: return { label: t('review.mergedRecords'), isFallback: false };
   }

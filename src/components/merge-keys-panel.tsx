@@ -206,7 +206,7 @@ export default function MergeKeysPanel() {
                 setKeyAlignmentResult({
                   fieldMapping: parsed.fieldMapping ?? {},
                   fieldOrder: parsed.fieldOrder ?? [],
-                  aiFailed: parsed.aiFailed ?? false,
+                  aiFailed: false,
                 });
                 // Mark aligning as done
                 setPhases((prev) =>

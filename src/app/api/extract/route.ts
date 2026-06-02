@@ -7,6 +7,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 
 import { parseJsonResponse } from '@/lib/pipeline/json-parser'
+import { isPrivateHost, sseEvent, workerPool } from '@/lib/api-utils'
 
 export const maxDuration = 300
 import { groupFilesByPrefix, findGroupForFile } from '@/lib/pipeline/file-grouper'
@@ -19,31 +20,6 @@ import { normalizePostExtraction } from '@/lib/pipeline/post-normalizer'
 import type { PerFileResult } from '@/lib/pipeline/types'
 
 type OpenAIError = Error & { status?: number }
-
-// ─── Security: URL validation ────────────────────────────────────────────
-
-const PRIVATE_HOSTS = [
-  /^localhost$/i,
-  /^127(?:\.\d{1,3}){3}$/,
-  /^10(?:\.\d{1,3}){3}$/,
-  /^172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}$/,
-  /^192\.168(?:\.\d{1,3}){2}$/,
-  /^169\.254(?:\.\d{1,3}){2}$/,
-  /^0\.0\.0\.0$/,
-  /^::1$/,
-  /^\[::1\]$/,
-]
-
-function isPrivateHost(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return true
-    const hostname = parsed.hostname
-    return PRIVATE_HOSTS.some((re) => re.test(hostname))
-  } catch {
-    return true
-  }
-}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -71,12 +47,6 @@ interface ExtractRequestBody {
   prompts?: {
     extraction?: string
   }
-}
-
-// ─── Helper: send SSE event ─────────────────────────────────────────────────
-
-function sseEvent(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
 // ─── File parsing ───────────────────────────────────────────────────────────
@@ -185,27 +155,7 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
   }
 }
 
-// ─── Worker pool for concurrent processing ───────────────────────────────────
-
-async function workerPool<T>(
-  items: T[],
-  concurrency: number,
-  handler: (item: T, index: number) => Promise<void>,
-): Promise<void> {
-  let nextIndex = 0
-
-  async function worker(): Promise<void> {
-    while (nextIndex < items.length) {
-      const index = nextIndex++
-      await handler(items[index], index)
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
-  await Promise.all(workers)
-}
-
-// ─── Flat validation ──────────────────────────────────────────────────────────
+// ─── Flat validation & deterministic flatten ──────────────────────────────────
 
 function isFlat(data: Record<string, unknown>): boolean {
   for (const val of Object.values(data)) {
@@ -214,14 +164,22 @@ function isFlat(data: Record<string, unknown>): boolean {
   return true
 }
 
-const FLATTEN_RETRY_SYSTEM = `你上一次的输出包含了嵌套对象或数组，这不符合要求。请直接重新输出，不要思考：
-
-1. 所有信息必须在 JSON 的第一层级，绝对禁止嵌套对象 {} 和数组 []
-2. 所有值只能是字符串、数字或布尔类型
-3. 逻辑分类通过键名中的连字符 "-" 体现（如 "模块-子项"）
-4. 多个同类项用英文分号 ";" 拼接为一个字符串
-5. 带单位的数据保留数值和单位在一个字符串中
-6. 仅输出纯 JSON，不要任何解释性文本或代码块标记`
+/** Flatten a nested object deterministically using dot-path keys. Arrays are joined with ';'. */
+function flattenObject(obj: Record<string, unknown>, prefix = ''): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (const [key, val] of Object.entries(obj)) {
+    const fullKey = prefix ? `${prefix}.${key}` : key
+    if (val === null || val === undefined) continue
+    if (Array.isArray(val)) {
+      result[fullKey] = val.map((v) => typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)).join('; ')
+    } else if (typeof val === 'object') {
+      Object.assign(result, flattenObject(val as Record<string, unknown>, fullKey))
+    } else {
+      result[fullKey] = val
+    }
+  }
+  return result
+}
 
 // ─── POST handler ────────────────────────────────────────────────────────────
 
@@ -409,38 +367,10 @@ export async function POST(request: NextRequest) {
                   ? extracted as Record<string, unknown>
                   : { result: extracted }
 
-                // Validate flat structure — retry with flatten prompt if nested
+                // Validate flat structure — flatten deterministically if nested
                 let finalData = data
                 if (!isFlat(data)) {
-                  try {
-                    const flatMessages: OpenAI.ChatCompletionMessageParam[] = [
-                      { role: 'system', content: FLATTEN_RETRY_SYSTEM },
-                      {
-                        role: 'user',
-                        content: `以下是需要展平的 JSON 数据：\n\n${JSON.stringify(data)}\n\n请按照上述规则输出完全扁平化的 JSON。`,
-                      },
-                    ]
-                    const flatCompletion = await openai.chat.completions.create(
-                      { ...requestOptions, messages: flatMessages } as any,
-                      { signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]) },
-                    )
-                    let flatContent = ''
-                    if (Symbol.asyncIterator in Object(flatCompletion)) {
-                      for await (const chunk of flatCompletion as unknown as AsyncIterable<OpenAI.ChatCompletionChunk>) {
-                        const delta = chunk.choices?.[0]?.delta?.content
-                        if (delta) flatContent += delta
-                      }
-                    } else {
-                      const msg = (flatCompletion as unknown as OpenAI.ChatCompletion).choices?.[0]?.message
-                      flatContent = msg?.content || ''
-                    }
-                    const flatParsed = parseJsonResponse(flatContent)
-                    if (flatParsed && typeof flatParsed === 'object' && !Array.isArray(flatParsed) && isFlat(flatParsed as Record<string, unknown>)) {
-                      finalData = flatParsed as Record<string, unknown>
-                    }
-                  } catch {
-                    // Flatten retry failed — proceed with original data (Phase 2 schema-flattener handles nested structures)
-                  }
+                  finalData = flattenObject(data)
                 }
 
                 let imageDataUrl: string | undefined
