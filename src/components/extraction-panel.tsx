@@ -10,6 +10,7 @@ import {
   ChevronDown,
   FileSearch,
   Loader2,
+  Eye,
 } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
@@ -67,6 +68,8 @@ export default function ExtractionPanel() {
   const updateFile = useStore((s) => s.updateFile);
 
   const abortRef = useRef<AbortController | null>(null);
+  const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set());
+  const [previewResult, setPreviewResult] = useState<{ fileId: string; fileName: string; data: Record<string, unknown> } | null>(null);
   const [hasExtracted, setHasExtracted] = useState(
     progress.status === 'extraction_done' || progress.status === 'done' || progress.status === 'aligning_merging',
   );
@@ -132,6 +135,12 @@ export default function ExtractionPanel() {
     // Generate session ID for IndexedDB persistence
     const sessionId = crypto.randomUUID();
 
+    // Clean up any previous server temp files before starting new extraction
+    const prevSessionIds = [...new Set(files.map((f) => f.sessionId).filter(Boolean))] as string[];
+    prevSessionIds.forEach((sid) => {
+      fetch(`/api/upload/${sid}`, { method: 'DELETE' }).catch(() => {});
+    });
+
     const total = files.length;
     setProgress({
       totalFiles: total,
@@ -169,7 +178,6 @@ export default function ExtractionPanel() {
         if (controller.signal.aborted) break;
 
         const { files: batchFiles } = batches[batchIdx];
-        const globalOffset = batchIdx * BATCH_SIZE;
         const isFirstBatch = batchIdx === 0;
 
         const body = {
@@ -363,11 +371,8 @@ export default function ExtractionPanel() {
         setHasExtracted(true);
         // Clear IndexedDB session on successful completion
         clearSession(sessionId).catch(() => {});
-        // Clean up server temp files for all unique sessionIds
-        const serverSessionIds = [...new Set(files.map((f) => f.sessionId).filter(Boolean))] as string[];
-        serverSessionIds.forEach((sid) => {
-          fetch(`/api/upload/${sid}`, { method: 'DELETE' }).catch(() => {});
-        });
+        // NOTE: Do NOT clean up server temp files here — handleRetryFailed may need them
+        // Temp files will be cleaned up when user navigates away or starts a new extraction
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
@@ -423,18 +428,14 @@ export default function ExtractionPanel() {
   ]);
 
   // ------------------------------------------------------------------
-  // Retry failed files only (SSE stream to /api/extract)
+  // Retry selected files (SSE stream to /api/extract)
   // ------------------------------------------------------------------
-  const handleRetryFailed = useCallback(async () => {
+  const handleRetrySelected = useCallback(async (fileIdsToRetry: string[]) => {
     const snapshot = useStore.getState().extractionSnapshot;
     const allFiles = useStore.getState().files;
     if (!snapshot) return;
 
-    const failedResults = snapshot.results.filter((r) => !r.success);
-    if (failedResults.length === 0) return;
-
-    const failedFileIds = new Set(failedResults.map((r) => r.fileId));
-    const filesToRetry = allFiles.filter((f) => failedFileIds.has(f.id));
+    const filesToRetry = allFiles.filter((f) => fileIdsToRetry.includes(f.id));
     if (filesToRetry.length === 0) return;
 
     // Reset extract phases to show retry progress
@@ -549,11 +550,11 @@ export default function ExtractionPanel() {
             break;
 
           case 'extraction_done': {
-            // Merge retry results into existing snapshot
+            // Merge retry results into existing snapshot (match by fileId)
             const existing = useStore.getState().extractionSnapshot;
             if (existing) {
               const mergedResults = existing.results.map((r) => {
-                const retryResult = retryResults.find((nr) => nr.fileName === r.fileName);
+                const retryResult = retryResults.find((nr) => nr.fileId === r.fileId);
                 if (retryResult) {
                   if (retryResult.success) {
                     return { ...retryResult, groupId: r.groupId };
@@ -575,6 +576,7 @@ export default function ExtractionPanel() {
               ),
             );
             setProgress({ status: 'extraction_done' });
+            setSelectedResults(new Set());
             break;
           }
 
@@ -594,7 +596,7 @@ export default function ExtractionPanel() {
         const existing = useStore.getState().extractionSnapshot;
         if (existing && retryResults.length > 0) {
           const mergedResults = existing.results.map((r) => {
-            const retryResult = retryResults.find((nr) => nr.fileName === r.fileName);
+            const retryResult = retryResults.find((nr) => nr.fileId === r.fileId);
             if (retryResult) {
               if (retryResult.success) return { ...retryResult, groupId: r.groupId };
               return { ...r, error: retryResult.error };
@@ -607,6 +609,7 @@ export default function ExtractionPanel() {
           prev.map((p) => (p.status === 'active' ? { ...p, status: 'done' } : p)),
         );
         setProgress({ status: 'extraction_done' });
+        setSelectedResults(new Set());
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
@@ -623,6 +626,14 @@ export default function ExtractionPanel() {
       abortRef.current = null;
     }
   }, [t, setProgress, setExtractionSnapshot]);
+
+  // Convenience: retry all failed files
+  const handleRetryFailed = useCallback(() => {
+    const snapshot = useStore.getState().extractionSnapshot;
+    if (!snapshot) return;
+    const failedIds = snapshot.results.filter((r) => !r.success).map((r) => r.fileId);
+    handleRetrySelected(failedIds);
+  }, [handleRetrySelected]);
 
   // ------------------------------------------------------------------
   // Abort
@@ -739,18 +750,6 @@ export default function ExtractionPanel() {
                       failed: extractionSummary.failed,
                     })}
                   </span>
-                  {extractionSummary.failed > 0 && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="ml-auto h-7 text-xs"
-                      disabled={isExtracting}
-                      onClick={handleRetryFailed}
-                    >
-                      <RotateCcw className="size-3 mr-1" />
-                      {t('review.retryFailed', { count: extractionSummary.failed })}
-                    </Button>
-                  )}
                   <ChevronDown className="ml-auto size-4 text-muted-foreground transition-transform" />
                 </CollapsibleTrigger>
                 <CollapsibleContent>
@@ -771,20 +770,84 @@ export default function ExtractionPanel() {
                       </div>
                     )}
 
-                    {/* Per-file extraction status */}
-                    <div className="max-h-[200px] overflow-auto rounded-md border">
+                    {/* Action bar: select all / retry selected / retry failed */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={() => {
+                          if (selectedResults.size === extractionSnapshot!.results.length) {
+                            setSelectedResults(new Set());
+                          } else {
+                            setSelectedResults(new Set(extractionSnapshot!.results.map((r) => r.fileId)));
+                          }
+                        }}
+                      >
+                        {selectedResults.size === extractionSnapshot?.results.length
+                          ? t('review.deselectAll')
+                          : t('review.selectAll')}
+                      </Button>
+                      {selectedResults.size > 0 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          disabled={isExtracting}
+                          onClick={() => handleRetrySelected(Array.from(selectedResults))}
+                        >
+                          <RotateCcw className="size-3 mr-1" />
+                          {t('review.retrySelected', { count: selectedResults.size })}
+                        </Button>
+                      )}
+                      {extractionSummary.failed > 0 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          disabled={isExtracting}
+                          onClick={handleRetryFailed}
+                        >
+                          <RotateCcw className="size-3 mr-1" />
+                          {t('review.retryFailed', { count: extractionSummary.failed })}
+                        </Button>
+                      )}
+                    </div>
+
+                    {/* Per-file extraction status with checkboxes and preview */}
+                    <div className="max-h-[300px] overflow-auto rounded-md border">
                       <table className="w-full text-sm">
                         <thead>
                           <tr className="border-b bg-muted/50 text-left text-muted-foreground">
-                            <th className="px-3 py-1.5 w-8" />
+                            <th className="px-2 py-1.5 w-8" />
+                            <th className="px-2 py-1.5 w-6" />
                             <th className="px-3 py-1.5">{t('review.fileName')}</th>
                             <th className="px-3 py-1.5 w-20 text-right">{t('review.fieldsCount', { count: 'N' }).replace(/\d+/, '')}</th>
+                            <th className="px-2 py-1.5 w-8" />
                           </tr>
                         </thead>
                         <tbody>
                           {extractionSnapshot?.results.map((r) => (
-                            <tr key={r.fileId} className="border-b last:border-0">
-                              <td className="px-3 py-1">
+                            <tr
+                              key={r.fileId}
+                              className={`border-b last:border-0 ${selectedResults.has(r.fileId) ? 'bg-primary/5' : ''}`}
+                            >
+                              <td className="px-2 py-1">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedResults.has(r.fileId)}
+                                  onChange={() => {
+                                    setSelectedResults((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(r.fileId)) next.delete(r.fileId);
+                                      else next.add(r.fileId);
+                                      return next;
+                                    });
+                                  }}
+                                  className="size-3.5 rounded"
+                                />
+                              </td>
+                              <td className="px-2 py-1">
                                 {r.success ? (
                                   <CheckCircle2 className="size-3.5 text-emerald-600" />
                                 ) : (
@@ -795,6 +858,17 @@ export default function ExtractionPanel() {
                               <td className="px-3 py-1 text-right text-muted-foreground">
                                 {r.success && r.data ? Object.keys(r.data).length : '\u2014'}
                               </td>
+                              <td className="px-2 py-1">
+                                {r.success && r.data && (
+                                  <button
+                                    onClick={() => setPreviewResult({ fileId: r.fileId, fileName: r.fileName, data: r.data! })}
+                                    className="text-muted-foreground hover:text-primary transition-colors"
+                                    title={t('review.preview')}
+                                  >
+                                    <Eye className="size-3.5" />
+                                  </button>
+                                )}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -804,6 +878,32 @@ export default function ExtractionPanel() {
                 </CollapsibleContent>
               </Collapsible>
             </Card>
+
+            {/* Result Preview Dialog */}
+            {previewResult && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setPreviewResult(null)}>
+                <Card className="max-w-lg w-full mx-4 max-h-[80vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-base">{previewResult.fileName}</CardTitle>
+                    <button onClick={() => setPreviewResult(null)} className="text-muted-foreground hover:text-foreground">
+                      &times;
+                    </button>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2">
+                      {Object.entries(previewResult.data).map(([key, value]) => (
+                        <div key={key} className="flex gap-2 text-sm">
+                          <span className="font-medium text-muted-foreground shrink-0 min-w-[120px]">{key}</span>
+                          <span className="break-all">
+                            {typeof value === 'string' ? value : JSON.stringify(value)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
           </div>
         )}
       </CardContent>

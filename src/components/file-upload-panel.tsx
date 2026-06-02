@@ -56,8 +56,10 @@ function compressImage(file: File): Promise<File> {
       return;
     }
 
+    const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
+      URL.revokeObjectURL(url);
       const canvas = document.createElement('canvas');
       let { width, height } = img;
 
@@ -84,8 +86,11 @@ function compressImage(file: File): Promise<File> {
         IMAGE_QUALITY,
       );
     };
-    img.onerror = () => resolve(file);
-    img.src = URL.createObjectURL(file);
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(file);
+    };
+    img.src = url;
   });
 }
 

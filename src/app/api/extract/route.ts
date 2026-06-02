@@ -135,11 +135,11 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
     case 'png':
     case 'gif':
     case 'webp': {
-      if (!file.dataUrl) {
+      const base64Data = getBase64()
+      if (!base64Data) {
         return { text: '[图片文件无内容]', images: [] }
       }
 
-      const base64Data = file.dataUrl.replace(/^data:[^;]+;base64,/, '')
       const buffer = Buffer.from(base64Data, 'base64')
       const fileSizeBytes = buffer.length
       const thresholdBytes = compressThreshold * 1024 * 1024
@@ -155,7 +155,9 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
         const mimeType = isPng ? 'image/png' : 'image/jpeg'
         finalDataUrl = `data:${mimeType};base64,${base64}`
       } else {
-        finalDataUrl = file.dataUrl
+        // Reconstruct dataUrl from base64 buffer
+        const mimeType = file.type || 'image/png'
+        finalDataUrl = `data:${mimeType};base64,${base64Data}`
       }
 
       return { text: '[图片文件]', images: [{ dataUrl: finalDataUrl }] }
@@ -169,8 +171,17 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
     case 'xml':
     case 'html':
     case 'htm':
-    default:
+    default: {
+      // For text-based files, try server temp file first, then fallback to content
+      if (file.sessionId) {
+        const filePath = join(tmpdir(), 'ocr-extract', file.sessionId, file.id)
+        if (existsSync(filePath)) {
+          const text = readFileSync(filePath, 'utf-8')
+          return { text }
+        }
+      }
       return { text: file.content || '' }
+    }
   }
 }
 
