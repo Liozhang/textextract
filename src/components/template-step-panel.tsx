@@ -160,11 +160,23 @@ export default function TemplateStepPanel() {
     setPipelineRows([]);
     setSchemaHeaders([]);
     setSchemaAlignFallback(false);
-    setPhases([...INIT_PHASES]);
+
+    const currentColumns = useStore.getState().templateColumns;
+    const hasTemplateColumns = currentColumns.length > 0;
+
+    // Conditionally include aligning phase
+    const basePhases: PipelinePhase[] = [
+      { key: 'grouping', status: 'done' as const, detail: '' },
+      { key: 'extracting', status: 'done' as const, detail: '' },
+      { key: 'merging', status: 'pending' as const, detail: '' },
+    ];
+    if (hasTemplateColumns) {
+      basePhases.push({ key: 'aligning', status: 'pending' as const, detail: '' });
+    }
+    setPhases(basePhases);
 
     setProgress({ status: 'aligning_merging' });
 
-    const currentColumns = useStore.getState().templateColumns;
     const currentPromptSettings = useStore.getState().promptSettings;
 
     const body = {
@@ -180,8 +192,11 @@ export default function TemplateStepPanel() {
       ...(currentColumns.length > 0 ? { columns: currentColumns } : {}),
       prompts: {
         merge: currentPromptSettings.merge || undefined,
+        templateAlign: currentPromptSettings.templateAlign || undefined,
       },
-      apiSettings: useStore.getState().apiSettings,
+      ...(useStore.getState().apiSettings.baseUrl || useStore.getState().apiSettings.apiKey || useStore.getState().apiSettings.model ? {
+        apiSettings: useStore.getState().apiSettings,
+      } : {}),
     };
 
     const controller = new AbortController();
@@ -252,6 +267,30 @@ export default function TemplateStepPanel() {
                         total: totalGroups,
                       }),
                     }
+                  : p,
+              ),
+            );
+            break;
+          }
+
+          case 'align_start': {
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === 'aligning'
+                  ? { ...p, status: 'active', detail: `${parsed.label} (${parsed.entryCount})` }
+                  : p.key === 'merging'
+                    ? { ...p, status: 'done' }
+                    : p,
+              ),
+            );
+            break;
+          }
+
+          case 'group_aligned': {
+            setPhases((prev) =>
+              prev.map((p) =>
+                p.key === 'aligning'
+                  ? { ...p, detail: `${parsed.groupKey} \u2713` }
                   : p,
               ),
             );

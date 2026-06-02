@@ -217,6 +217,7 @@ const en = {
     keyAlign: 'Key Alignment Prompt',
     schemaAlign: 'Schema Alignment Prompt',
     merge: 'Merge Prompt',
+    templateAlign: 'Template Alignment Prompt',
     restoreDefaults: 'Restore Defaults',
     restoreConfirmTitle: 'Restore Defaults?',
     restoreConfirmDesc: 'All custom prompts will be replaced with defaults. This cannot be undone.',
@@ -226,6 +227,7 @@ const en = {
     apiKeyPlaceholder: 'sk-...',
     apiModel: 'Model',
     apiModelPlaceholder: 'gpt-4o',
+    apiConcurrency: 'Concurrency',
     apiSection: 'API Configuration',
   },
 } satisfies TranslationMap;
@@ -449,6 +451,7 @@ const zh: {
     keyAlign: '\u952E\u540D\u5F52\u4E00\u5316 Prompt',
     schemaAlign: 'Schema \u5BF9\u9F50 Prompt',
     merge: '\u5408\u5E76 Prompt',
+    templateAlign: '\u6A21\u677F\u5BF9\u9F50 Prompt',
     restoreDefaults: '\u6062\u590D\u9ED8\u8BA4',
     restoreConfirmTitle: '\u6062\u590D\u9ED8\u8BA4\u8BBE\u7F6E\uFF1F',
     restoreConfirmDesc: '\u6240\u6709\u81EA\u5B9A\u4E49 Prompt \u5C06\u88AB\u66FF\u6362\u4E3A\u9ED8\u8BA4\u503C\uFF0C\u6B64\u64CD\u4F5C\u65E0\u6CD5\u64A4\u9500\u3002',
@@ -458,6 +461,7 @@ const zh: {
     apiKeyPlaceholder: 'sk-...',
     apiModel: '\u6A21\u578B\u540D\u79F0',
     apiModelPlaceholder: 'gpt-4o',
+    apiConcurrency: '\u5E76\u53D1\u6570',
     apiSection: 'API \u914D\u7F6E',
   },
 };

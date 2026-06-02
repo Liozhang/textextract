@@ -205,11 +205,14 @@ export default function ExtractionPanel() {
           prompts: {
             extraction: promptSettings.extraction || undefined,
           },
-          apiSettings: {
-            baseUrl: apiSettings.baseUrl || undefined,
-            apiKey: apiSettings.apiKey || undefined,
-            model: apiSettings.model || undefined,
-          },
+          ...(apiSettings.baseUrl || apiSettings.apiKey || apiSettings.model ? {
+            apiSettings: {
+              baseUrl: apiSettings.baseUrl || undefined,
+              apiKey: apiSettings.apiKey || undefined,
+              model: apiSettings.model || undefined,
+              concurrency: apiSettings.concurrency || undefined,
+            },
+          } : {}),
         };
 
         const response = await fetch('/api/extract', {
@@ -480,7 +483,9 @@ export default function ExtractionPanel() {
       prompts: {
         extraction: useStore.getState().promptSettings.extraction || undefined,
       },
-      apiSettings: useStore.getState().apiSettings,
+      ...(useStore.getState().apiSettings.baseUrl || useStore.getState().apiSettings.apiKey || useStore.getState().apiSettings.model ? {
+        apiSettings: useStore.getState().apiSettings,
+      } : {}),
     };
 
     const controller = new AbortController();

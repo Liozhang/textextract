@@ -231,6 +231,7 @@ export default function TemplatePanel({
       }
 
       // Complex description — call AI to generate columns
+      const apiSettings = useStore.getState().apiSettings;
       const res = await fetch('/api/generate-template', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -238,7 +239,7 @@ export default function TemplatePanel({
           prompt: templatePrompt.trim(),
           files: files.map((f) => ({ name: f.name })),
           extractionData: extractionData || undefined,
-          apiSettings: useStore.getState().apiSettings,
+          ...(apiSettings.baseUrl || apiSettings.apiKey || apiSettings.model ? { apiSettings } : {}),
         }),
       });
 

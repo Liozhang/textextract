@@ -8,6 +8,7 @@ export interface ApiSettingsResolved {
   baseUrl: string
   apiKey: string
   model: string
+  concurrency: number
 }
 
 /**
@@ -15,12 +16,13 @@ export interface ApiSettingsResolved {
  * environment variables as fallback.
  */
 export function resolveApiSettings(
-  overrides?: { baseUrl?: string; apiKey?: string; model?: string } | null,
+  overrides?: { baseUrl?: string; apiKey?: string; model?: string; concurrency?: number } | null,
 ): ApiSettingsResolved {
   return {
     baseUrl: (overrides?.baseUrl || process.env.API_BASE_URL || '').trim(),
     apiKey: (overrides?.apiKey || process.env.API_KEY || '').trim(),
     model: (overrides?.model || process.env.API_MODEL || '').trim(),
+    concurrency: overrides?.concurrency || Number(process.env.MERGE_CONCURRENCY) || 3,
   }
 }
 

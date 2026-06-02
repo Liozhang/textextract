@@ -3,12 +3,11 @@ import OpenAI from 'openai'
 
 export const maxDuration = 300
 
-import { mergeGroupWithAI } from '@/lib/pipeline/merge-agent'
-import { isPrivateHost, sseEvent, workerPool, resolveApiSettings, type ApiSettingsResolved } from '@/lib/api-utils'
-import { MERGE_SYSTEM_MESSAGE } from '@/lib/pipeline/prompts'
+import { mergeGroupWithAI, alignToTemplateWithAI } from '@/lib/pipeline/merge-agent'
+import { isPrivateHost, sseEvent, workerPool, resolveApiSettings } from '@/lib/api-utils'
+import { MERGE_SYSTEM_MESSAGE, TEMPLATE_ALIGN_SYSTEM_MESSAGE } from '@/lib/pipeline/prompts'
 import type { PerFileResult, MergedRecord } from '@/lib/pipeline/types'
 import type { ColumnConstraint } from '@/lib/store'
-import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -18,6 +17,7 @@ interface AlignMergeRequestBody {
   columns?: ColumnConstraint[]
   prompts?: {
     merge?: string
+    templateAlign?: string
   }
   apiSettings?: {
     baseUrl?: string
@@ -26,7 +26,7 @@ interface AlignMergeRequestBody {
   }
 }
 
-// ─── Merge fallback helper ──────────────────────────────────────────────────
+// ─── Merge fallback helper (Phase 1: no template columns) ───────────────────
 
 async function mergeGroupWithFallback(
   openai: OpenAI,
@@ -35,23 +35,17 @@ async function mergeGroupWithFallback(
   groupResults: PerFileResult[],
   abortSignal: AbortSignal,
   mergePrompt?: string,
-  templateColumns?: Array<{ key: string; description?: string }>,
 ): Promise<MergedRecord[]> {
   const successful = groupResults.filter((r) => r.success && r.data)
 
-  // Single file or all failed -> pass through (enforce template columns if provided)
+  // Single file or all failed -> pass through (preserve all original keys)
   if (successful.length <= 1) {
     const r = groupResults.find((r) => r.success) || groupResults[0]
     const rawData = r?.data || {}
-    const filteredData = templateColumns && templateColumns.length > 0
-      ? Object.fromEntries(
-          templateColumns.map((c) => [c.key, c.key in rawData ? rawData[c.key] : null]),
-        )
-      : rawData
     return [{
       groupId: group.groupId,
       groupKey: group.groupKey,
-      data: filteredData,
+      data: rawData,
       imageDataUrl: r?.imageDataUrl,
       sourceFileNames: successful.length > 0 ? successful.map((r) => r.fileName) : [r?.fileName || ''],
       mergedCount: successful.length,
@@ -78,7 +72,6 @@ async function mergeGroupWithFallback(
       })),
       abortSignal,
       mergePrompt,
-      templateColumns,
     )
   } catch (err) {
     throw new Error(
@@ -133,6 +126,7 @@ export async function POST(request: NextRequest) {
 
     // Resolve prompts
     const mergePrompt = customPrompts?.merge || MERGE_SYSTEM_MESSAGE
+    const templateAlignPrompt = customPrompts?.templateAlign || TEMPLATE_ALIGN_SYSTEM_MESSAGE
 
     const apiSettings = resolveApiSettings(apiSettingsOverride)
 
@@ -167,6 +161,7 @@ export async function POST(request: NextRequest) {
       : Array.from(allKeys)
 
     const templateColsForAI = templateColumns?.map((c) => ({ key: c.key, description: c.description }))
+    const hasTemplateColumns = templateColsForAI && templateColsForAI.length > 0
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -183,12 +178,12 @@ export async function POST(request: NextRequest) {
         }
 
         try {
-          // ── Phase: Merge per group ───────────────────────────────────────
+          // ── Phase 1: Merge per group (no template columns) ────────────────
           send('phase', { phase: 'merging' })
           send('schema_ready', { headers: outputHeaders, totalRows: extractionData.filter((r) => r.success).length })
 
           const mergedRecords: MergedRecord[] = []
-          const mergeConcurrency = Number(process.env.MERGE_CONCURRENCY) || 3
+          const mergeConcurrency = apiSettings.concurrency
 
           await workerPool(groups, mergeConcurrency, async (group) => {
             const groupResults = extractionData.filter((r) => r.groupId === group.groupId)
@@ -207,7 +202,6 @@ export async function POST(request: NextRequest) {
               groupResults,
               AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]),
               mergePrompt,
-              templateColsForAI,
             )
 
             send('group_merged', {
@@ -222,15 +216,55 @@ export async function POST(request: NextRequest) {
             mergedRecords.push(...groupRecords)
           })
 
+          // ── Phase 2: Template alignment (if template columns exist) ───────
+          let finalRecords = mergedRecords
+
+          if (hasTemplateColumns) {
+            send('phase', { phase: 'aligning' })
+
+            const alignedRecords: MergedRecord[] = []
+
+            await workerPool(groups, mergeConcurrency, async (group) => {
+              const groupMerged = mergedRecords.filter((r) => r.groupId === group.groupId)
+              if (groupMerged.length === 0) return
+
+              send('align_start', {
+                groupId: group.groupId,
+                label: group.groupKey,
+                entryCount: groupMerged.length,
+              })
+
+              const aligned = await alignToTemplateWithAI(
+                openai,
+                apiSettings.model,
+                group.groupKey,
+                group.groupId,
+                groupMerged,
+                templateColsForAI!,
+                AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]),
+                templateAlignPrompt,
+              )
+
+              send('group_aligned', {
+                groupId: group.groupId,
+                groupKey: group.groupKey,
+                entryCount: aligned.length,
+              })
+
+              alignedRecords.push(...aligned)
+            })
+
+            finalRecords = alignedRecords
+          }
+
           // ── Final: send all_done ──────────────────────────────────────────
-          // Count entries per group (for multi-entry labels)
           const groupEntryCounts = new Map<string, number>();
           const groupEntryIndices = new Map<string, number>();
-          for (const r of mergedRecords) {
+          for (const r of finalRecords) {
             groupEntryCounts.set(r.groupId, (groupEntryCounts.get(r.groupId) || 0) + 1);
           }
 
-          const rows = mergedRecords.map((record) => {
+          const rows = finalRecords.map((record) => {
             const idx = groupEntryIndices.get(record.groupId) || 0;
             groupEntryIndices.set(record.groupId, idx + 1);
             const totalInGroup = groupEntryCounts.get(record.groupId) || 1;
@@ -268,7 +302,7 @@ export async function POST(request: NextRequest) {
           send('all_done', {
             totalFiles: extractionData.length,
             totalGroups: groups.length,
-            mergedGroups: mergedRecords.length,
+            mergedGroups: finalRecords.length,
             rows,
           })
 

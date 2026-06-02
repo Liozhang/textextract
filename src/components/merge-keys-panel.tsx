@@ -164,7 +164,9 @@ export default function MergeKeysPanel() {
         prompts: {
           keyAlign: useStore.getState().promptSettings.keyAlign || undefined,
         },
-        apiSettings: useStore.getState().apiSettings,
+        ...(useStore.getState().apiSettings.baseUrl || useStore.getState().apiSettings.apiKey || useStore.getState().apiSettings.model ? {
+          apiSettings: useStore.getState().apiSettings,
+        } : {}),
       };
 
       const response = await fetch('/api/align-keys', {

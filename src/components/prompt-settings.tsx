@@ -37,6 +37,7 @@ const PHASES: Array<{ key: keyof PromptSettings; defaultKey: keyof typeof DEFAUL
   { key: 'keyAlign', defaultKey: 'keyAlign' },
   { key: 'schemaAlign', defaultKey: 'schemaAlign' },
   { key: 'merge', defaultKey: 'merge' },
+  { key: 'templateAlign', defaultKey: 'templateAlign' },
 ];
 
 export default function PromptSettings() {
@@ -131,6 +132,20 @@ export default function PromptSettings() {
                 placeholder={t('settings.apiModelPlaceholder')}
               />
             </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="api-concurrency" className="text-xs text-muted-foreground">
+                {t('settings.apiConcurrency')}
+              </Label>
+              <Input
+                id="api-concurrency"
+                type="number"
+                min="1"
+                max="10"
+                value={apiSettings.concurrency || ''}
+                onChange={(e) => setApiSettings({ concurrency: parseInt(e.target.value) || 0 })}
+                placeholder="3"
+              />
+            </div>
           </div>
 
           <div className="space-y-3 mt-4">
@@ -191,7 +206,7 @@ export default function PromptSettings() {
             <AlertDialogAction
               onClick={() => {
                 resetPromptSettings();
-                setLocalValues({ extraction: '', keyAlign: '', schemaAlign: '', merge: '' });
+                setLocalValues({ extraction: '', keyAlign: '', schemaAlign: '', merge: '', templateAlign: '' });
                 setShowResetConfirm(false);
               }}
             >

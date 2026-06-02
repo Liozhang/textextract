@@ -38,6 +38,7 @@ interface ApiSettings {
   apiKey: string
   model: string
   temperature?: number
+  concurrency: number
 }
 
 interface ExtractRequestBody {
@@ -50,6 +51,7 @@ interface ExtractRequestBody {
     baseUrl?: string
     apiKey?: string
     model?: string
+    concurrency?: number
   }
 }
 
@@ -241,6 +243,7 @@ export async function POST(request: NextRequest) {
       apiKey: resolved.apiKey,
       model: resolved.model,
       temperature: Number(process.env.API_TEMPERATURE) || 0.3,
+      concurrency: resolved.concurrency,
     }
 
     if (!files || files.length === 0) {
@@ -296,7 +299,7 @@ export async function POST(request: NextRequest) {
 
           const MAX_RETRIES = 3
 
-          await workerPool(files, 3, async (file, index) => {
+          await workerPool(files, apiSettings.concurrency, async (file, index) => {
             const fileId = file.id
             const fileName = file.name
             const group = findGroupForFile(fileGroups, file.id)

@@ -64,12 +64,14 @@ export interface PromptSettings {
   keyAlign: string;
   schemaAlign: string;
   merge: string;
+  templateAlign: string;
 }
 
 export interface ApiSettings {
   baseUrl: string;
   apiKey: string;
   model: string;
+  concurrency: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,12 +188,14 @@ const DEFAULT_PROMPT_SETTINGS: PromptSettings = {
   keyAlign: '',
   schemaAlign: '',
   merge: '',
+  templateAlign: '',
 };
 
 const DEFAULT_API_SETTINGS: ApiSettings = {
   baseUrl: '',
   apiKey: '',
   model: '',
+  concurrency: 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -334,17 +338,22 @@ export const useStore = create<AppState>()(
       }),
       // Only persist these slices - wizard step and progress are transient
       // SECURITY: apiKey is excluded from persistence to avoid plaintext storage in localStorage
-      partialize: (state) => ({
-        exportSettings: state.exportSettings,
-        locale: state.locale,
-        promptSettings: state.promptSettings,
-        apiSettings: {
-          baseUrl: state.apiSettings.baseUrl,
-          model: state.apiSettings.model,
-          // SECURITY: apiKey is excluded from persistence
-          apiKey: '',
-        },
-      }),
+      partialize: (state) => {
+        const hasApiSettings = state.apiSettings.baseUrl || state.apiSettings.apiKey || state.apiSettings.model || state.apiSettings.concurrency;
+        return {
+          exportSettings: state.exportSettings,
+          locale: state.locale,
+          promptSettings: state.promptSettings,
+          ...(hasApiSettings ? {
+            apiSettings: {
+              baseUrl: state.apiSettings.baseUrl,
+              model: state.apiSettings.model,
+              // SECURITY: apiKey is excluded from persistence
+              apiKey: '',
+            },
+          } : {}),
+        };
+      },
       // Skip hydration on server; the `mounted` flag is used client-side
       skipHydration: true,
       // Version migration: clean up old template data from version 0
