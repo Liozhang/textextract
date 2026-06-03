@@ -14,6 +14,7 @@ import { groupFilesByPrefix, findGroupForFile } from '@/lib/pipeline/file-groupe
 import {
   EXTRACTION_SYSTEM_MESSAGE,
   TEXT_EXTRACTION_PREFIX,
+  buildSchemaGuidedPrompt,
 } from '@/lib/pipeline/prompts'
 import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
 import type { PerFileResult } from '@/lib/pipeline/types'
@@ -53,6 +54,14 @@ interface ExtractRequestBody {
     model?: string
     concurrency?: number
   }
+  /** Schema columns for guided extraction (template-first mode) */
+  templateColumns?: Array<{
+    key: string
+    type: 'string' | 'number' | 'boolean'
+    description: string
+    example?: string
+    repeating?: boolean
+  }>
 }
 
 // ─── File parsing ───────────────────────────────────────────────────────────
@@ -218,10 +227,17 @@ export async function POST(request: NextRequest) {
       files,
       imageCompressThreshold = Number(process.env.IMAGE_COMPRESS_THRESHOLD) || 20,
       prompts: customPrompts,
+      templateColumns,
     } = body
 
-    // Resolve prompt: custom override or default
-    const extractionPrompt = customPrompts?.extraction || EXTRACTION_SYSTEM_MESSAGE
+    // Resolve prompt: schema-guided or legacy
+    // User custom extraction prompt is always supplementary (<user_instructions>), never replaces column definitions.
+    const isSchemaMode = templateColumns && templateColumns.length > 0
+    const extractionPrompt = isSchemaMode
+      ? buildSchemaGuidedPrompt(templateColumns, customPrompts?.extraction)
+      : (customPrompts?.extraction
+        ? EXTRACTION_SYSTEM_MESSAGE + `\n\n<user_instructions>\n${customPrompts.extraction.trim()}\n</user_instructions>`
+        : EXTRACTION_SYSTEM_MESSAGE)
 
     // Compute per-call timeout scaled to total request payload size.
     // Base: API_TIMEOUT env (default 120s) + 15s per MB of total body (covers
@@ -229,13 +245,14 @@ export async function POST(request: NextRequest) {
     // Fallback: if content-length is absent (chunked encoding), estimate from
     // parsed file data to avoid silent degradation to base timeout.
     const baseTimeout = Number(process.env.API_TIMEOUT) || 120_000
-    // Per-file timeout: based on individual file size, capped at 300s.
-    // Align-merge uses 600s for long-format output; extraction per file is shorter.
+    // Schema mode needs longer timeout: entries JSON with many columns is much larger output
+    const schemaCap = isSchemaMode ? 600_000 : 300_000
+    // Per-file timeout: based on individual file size, capped at 300s (600s for schema).
     const computePerFileTimeout = (dataUrlLength: number, attempt: number): number => {
       const fileSizeMB = dataUrlLength / (1024 * 1024)
       const sizeTimeout = baseTimeout + Math.ceil(fileSizeMB * 10_000)
       const attemptFactor = attempt === 1 ? 1 : attempt === 2 ? 0.6 : 0.4
-      return Math.min(300_000, Math.floor(sizeTimeout * attemptFactor))
+      return Math.min(schemaCap, Math.floor(sizeTimeout * attemptFactor))
     }
 
     // All model settings from .env, overridden by user-provided settings
@@ -356,6 +373,24 @@ export async function POST(request: NextRequest) {
             let retryMessages: OpenAI.ChatCompletionMessageParam[] = [...baseMessages]
             const fileDataLen = file.dataUrl?.length || 0
 
+            // Helper: await next chunk with stall detection (timeout cleared on success)
+            async function nextChunkWithStallCheck(
+              iter: AsyncIterator<OpenAI.ChatCompletionChunk>,
+              StallTimeout: number,
+            ): Promise<IteratorResult<OpenAI.ChatCompletionChunk>> {
+              let timer: ReturnType<typeof setTimeout> | undefined
+              try {
+                return await Promise.race([
+                  iter.next(),
+                  new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new Error('STALL')), StallTimeout)
+                  }),
+                ])
+              } finally {
+                if (timer) clearTimeout(timer)
+              }
+            }
+
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
               const perCallTimeout = computePerFileTimeout(fileDataLen, attempt)
               try {
@@ -369,19 +404,21 @@ export async function POST(request: NextRequest) {
                 )
 
                 let fullContent = ''
+                let stalled = false
                 if (Symbol.asyncIterator in Object(completion)) {
-                  const STALL_TIMEOUT = 30_000 // 30s without new token = stalled
+                  const STALL_TIMEOUT = isSchemaMode ? 60_000 : 30_000 // schema mode: 60s (more output), legacy: 30s
                   const iter = (completion as unknown as AsyncIterable<OpenAI.ChatCompletionChunk>)[Symbol.asyncIterator]()
+                  let firstTokenReceived = false
+                  const streamDeadline = Date.now() + perCallTimeout
 
-                  while (true) {
+                  while (Date.now() < streamDeadline) {
                     let chunk: OpenAI.ChatCompletionChunk | undefined
                     try {
-                      const result = await Promise.race([
-                        iter.next(),
-                        new Promise<never>((_, reject) =>
-                          setTimeout(() => reject(new Error('STALL')), STALL_TIMEOUT),
-                        ),
-                      ])
+                      // Only apply stall detection after first token received
+                      // (model may need >30s to process images before generating first token)
+                      const result = firstTokenReceived
+                        ? await nextChunkWithStallCheck(iter, STALL_TIMEOUT)
+                        : await iter.next()
                       if (result.done) break
                       chunk = result.value
                     } catch (e) {
@@ -391,19 +428,48 @@ export async function POST(request: NextRequest) {
                           fieldCount = Object.keys(parseJsonResponse(fullContent) as Record<string, unknown>).length
                         } catch { /* ignore parse errors in stall message */ }
                         lastError = `Token 停顿超过 ${STALL_TIMEOUT / 1000}s（已收到 ${fieldCount} 个字段）`
+                        stalled = true
                         break
                       }
                       throw e
                     }
 
-                    const delta = chunk?.choices?.[0]?.delta?.content
-                    if (delta) {
-                      fullContent += delta
+                    const delta = chunk?.choices?.[0]?.delta
+                    // Count both content and reasoning_content as "active" tokens
+                    // to avoid false stall detection during model thinking phase
+                    const contentDelta = delta?.content
+                    const reasoningDelta = (delta as Record<string, unknown> | undefined)?.reasoning_content
+                    if (contentDelta) {
+                      firstTokenReceived = true
+                      fullContent += contentDelta
+                    } else if (reasoningDelta) {
+                      firstTokenReceived = true
                     }
+                  }
+                  // Stream deadline exceeded — treat as timeout
+                  if (Date.now() >= streamDeadline && !stalled) {
+                    let fieldCount = 0
+                    try {
+                      fieldCount = Object.keys(parseJsonResponse(fullContent) as Record<string, unknown>).length
+                    } catch { /* ignore */ }
+                    lastError = `流式读取超时 (${Math.round(perCallTimeout / 1000)}s，已收到 ${fieldCount} 个字段)`
+                    stalled = true
                   }
                 } else {
                   const msg = (completion as unknown as OpenAI.ChatCompletion).choices?.[0]?.message
                   fullContent = msg?.content || ''
+                }
+
+                // Skip parsing on stall — partial content is unreliable, retry with context
+                if (stalled) {
+                  if (fullContent) {
+                    retryMessages = [
+                      ...baseMessages,
+                      { role: 'assistant' as const, content: fullContent },
+                      { role: 'user' as const, content: `上一次提取中途停顿，返回内容不完整。请重新提取所有字段，只返回纯 JSON 对象。` },
+                    ]
+                  }
+                  continue
                 }
 
                 // Parse JSON — separate try/catch for parse errors vs API errors
@@ -415,12 +481,84 @@ export async function POST(request: NextRequest) {
                   retryMessages = [
                     ...baseMessages,
                     { role: 'assistant' as const, content: fullContent },
-                    { role: 'user' as const, content: `上一次返回的不是合法 JSON。错误：${parseErr instanceof Error ? parseErr.message : '解析失败'}。请只返回纯 JSON 对象，不要包含 markdown 标记或解释文本。` },
+                    { role: 'user' as const, content: `上一次返回的不是合法 JSON。错误：${parseErr instanceof Error ? parseErr.message : '解析失败'}。请只返回 ${isSchemaMode ? '{"entries":[...]}' : '纯 JSON 对象'}，不要包含 markdown 标记或解释文本。` },
                   ]
                   lastError = `JSON 解析失败: ${parseErr instanceof Error ? parseErr.message : ''}`
                   continue
                 }
 
+                // ── Schema-guided mode: expect {entries: [...]} ──
+                if (isSchemaMode) {
+                  let entries: Array<Record<string, unknown>> = []
+                  if (extracted && typeof extracted === 'object' && !Array.isArray(extracted)) {
+                    const obj = extracted as Record<string, unknown>
+                    if (Array.isArray(obj.entries)) {
+                      entries = obj.entries.filter((e) => e && typeof e === 'object' && !Array.isArray(e))
+                    }
+                  }
+
+                  // Enforce template columns on each entry
+                  const validatedEntries = entries.map((entry) => {
+                    const row: Record<string, unknown> = {}
+                    for (const col of templateColumns) {
+                      row[col.key] = entry[col.key] ?? null
+                    }
+                    return row
+                  })
+
+                  // Guard: at least one entry
+                  if (validatedEntries.length === 0) {
+                    retryMessages = [
+                      ...baseMessages,
+                      { role: 'assistant' as const, content: fullContent },
+                      { role: 'user' as const, content: '上一次返回了空 entries 数组。请从文档中提取信息，输出 {"entries": [{...}]} 格式。' },
+                    ]
+                    lastError = 'Schema 模式提取结果为空（无 entries）'
+                    continue
+                  }
+
+                  // Guard: at least one entry must have non-null values
+                  const hasAnyData = validatedEntries.some(
+                    (entry) => Object.values(entry).some((v) => v !== null && v !== undefined),
+                  )
+                  if (!hasAnyData) {
+                    retryMessages = [
+                      ...baseMessages,
+                      { role: 'assistant' as const, content: fullContent },
+                      { role: 'user' as const, content: '上一次返回的所有 entry 值均为 null。请从文档中提取实际数据填入各列，确保至少一个字段有值。' },
+                    ]
+                    lastError = 'Schema 模式所有 entry 值均为 null'
+                    continue
+                  }
+
+                  let imageDataUrl: string | undefined
+                  if (file.dataUrl && /^data:image\//.test(file.dataUrl)) {
+                    imageDataUrl = file.dataUrl
+                  }
+
+                  perFileResults.push({
+                    fileId,
+                    fileName,
+                    groupId: group.groupId,
+                    success: true,
+                    entries: validatedEntries,
+                    imageDataUrl,
+                  })
+
+                  send('file_complete', {
+                    fileId,
+                    fileName,
+                    groupId: group.groupId,
+                    success: true,
+                    data: undefined,
+                    entries: validatedEntries,
+                  })
+
+                  lastError = ''
+                  break
+                }
+
+                // ── Legacy mode: flat object extraction ──
                 const data = (extracted && typeof extracted === 'object' && !Array.isArray(extracted))
                   ? extracted as Record<string, unknown>
                   : { result: extracted }
@@ -446,7 +584,24 @@ export async function POST(request: NextRequest) {
                 // Post-processing guards
                 // Guard against empty results
                 if (Object.keys(finalData).length === 0) {
+                  retryMessages = [
+                    ...baseMessages,
+                    { role: 'assistant' as const, content: fullContent },
+                    { role: 'user' as const, content: '上一次返回了空对象 {}，未提取到任何字段。请从文档中提取所有可识别的结构化信息，只返回纯 JSON 对象。' },
+                  ]
                   lastError = '提取结果为空'
+                  continue
+                }
+
+                // Guard against too-few fields (<2 fields is almost always a parse/model failure)
+                const MIN_FIELDS = 2
+                if (Object.keys(finalData).length < MIN_FIELDS) {
+                  retryMessages = [
+                    ...baseMessages,
+                    { role: 'assistant' as const, content: fullContent },
+                    { role: 'user' as const, content: `上一次返回仅包含 ${Object.keys(finalData).length} 个字段，字段数过少。请从文档中提取所有可识别的结构化字段，至少应包含多个字段。只返回纯 JSON 对象。` },
+                  ]
+                  lastError = `提取字段过少（仅 ${Object.keys(finalData).length} 个字段）`
                   continue
                 }
 
@@ -460,7 +615,12 @@ export async function POST(request: NextRequest) {
 
                 // Guard against concatenated table-header keys (too many hyphen segments)
                 const suspiciousKeys = Object.keys(finalData).filter(k => k.split('-').length > 5)
-                if (suspiciousKeys.length > 0 && Object.keys(finalData).length <= 5) {
+                if (suspiciousKeys.length > 0) {
+                  retryMessages = [
+                    ...baseMessages,
+                    { role: 'assistant' as const, content: fullContent },
+                    { role: 'user' as const, content: `上一次返回的键名疑似将表头拼接为一个键（${suspiciousKeys.slice(0, 3).join(', ')}）。每个字段必须是独立的短键名，禁止将多个表头合并为一个键。只返回纯 JSON 对象。` },
+                  ]
                   lastError = `疑似表格键名连接: ${suspiciousKeys.slice(0, 3).join(', ')}`
                   continue
                 }
@@ -510,7 +670,50 @@ export async function POST(request: NextRequest) {
             }
 
             // All retries exhausted
-            if (lastError) {
+            if (lastError && isSchemaMode) {
+              // Schema mode failed — fallback: one legacy attempt without schema constraints
+              send('file_retry', { fileId, fileName, attempt: MAX_RETRIES + 1 })
+              const legacyPrompt = customPrompts?.extraction
+                ? EXTRACTION_SYSTEM_MESSAGE + `\n\n<user_instructions>\n${customPrompts.extraction.trim()}\n</user_instructions>`
+                : EXTRACTION_SYSTEM_MESSAGE
+              const legacyMessages: OpenAI.ChatCompletionMessageParam[] = [
+                { role: 'system', content: legacyPrompt },
+                baseMessages[1], // user message with image content
+              ]
+              const legacyTimeout = Math.min(300_000, Math.floor((baseTimeout + Math.ceil(fileDataLen / (1024 * 1024) * 10_000))))
+              try {
+                const legacyCompletion = await openai.chat.completions.create(
+                  { ...requestOptions, messages: legacyMessages, stream: false } as any,
+                  { signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(legacyTimeout)]) },
+                )
+                const legacyFull = (legacyCompletion as unknown as OpenAI.ChatCompletion).choices?.[0]?.message?.content || ''
+                const legacyExtracted = parseJsonResponse(legacyFull)
+                if (legacyExtracted && typeof legacyExtracted === 'object' && !Array.isArray(legacyExtracted) && Object.keys(legacyExtracted).length > 0) {
+                  perFileResults.push({
+                    fileId,
+                    fileName,
+                    groupId: group.groupId,
+                    success: true,
+                    data: legacyExtracted as Record<string, unknown>,
+                    imageDataUrl: file.dataUrl?.startsWith('data:image') ? file.dataUrl : undefined,
+                  })
+                  send('file_complete', {
+                    fileId,
+                    fileName,
+                    groupId: group.groupId,
+                    success: true,
+                    data: perFileResults[perFileResults.length - 1].data,
+                  })
+                  lastError = ''
+                } else {
+                  perFileResults.push({ fileId, fileName, groupId: group.groupId, success: false, error: lastError })
+                  send('file_complete', { fileId, fileName, groupId: group.groupId, success: false, error: lastError })
+                }
+              } catch {
+                perFileResults.push({ fileId, fileName, groupId: group.groupId, success: false, error: lastError })
+                send('file_complete', { fileId, fileName, groupId: group.groupId, success: false, error: lastError })
+              }
+            } else if (lastError) {
               perFileResults.push({
                 fileId,
                 fileName,
@@ -537,6 +740,7 @@ export async function POST(request: NextRequest) {
               groupId: r.groupId,
               success: r.success,
               data: r.data,
+              entries: r.entries,
               error: r.error,
               imageDataUrl: r.imageDataUrl,
             })),
