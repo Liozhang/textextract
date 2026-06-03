@@ -370,9 +370,36 @@ export async function POST(request: NextRequest) {
 
                 let fullContent = ''
                 if (Symbol.asyncIterator in Object(completion)) {
-                  for await (const chunk of completion as unknown as AsyncIterable<OpenAI.ChatCompletionChunk>) {
-                    const delta = chunk.choices?.[0]?.delta?.content
-                    if (delta) fullContent += delta
+                  const STALL_TIMEOUT = 30_000 // 30s without new token = stalled
+                  const iter = (completion as unknown as AsyncIterable<OpenAI.ChatCompletionChunk>)[Symbol.asyncIterator]()
+
+                  while (true) {
+                    let chunk: OpenAI.ChatCompletionChunk | undefined
+                    try {
+                      const result = await Promise.race([
+                        iter.next(),
+                        new Promise<never>((_, reject) =>
+                          setTimeout(() => reject(new Error('STALL')), STALL_TIMEOUT),
+                        ),
+                      ])
+                      if (result.done) break
+                      chunk = result.value
+                    } catch (e) {
+                      if ((e as Error).message === 'STALL') {
+                        let fieldCount = 0
+                        try {
+                          fieldCount = Object.keys(parseJsonResponse(fullContent) as Record<string, unknown>).length
+                        } catch { /* ignore parse errors in stall message */ }
+                        lastError = `Token 停顿超过 ${STALL_TIMEOUT / 1000}s（已收到 ${fieldCount} 个字段）`
+                        break
+                      }
+                      throw e
+                    }
+
+                    const delta = chunk?.choices?.[0]?.delta?.content
+                    if (delta) {
+                      fullContent += delta
+                    }
                   }
                 } else {
                   const msg = (completion as unknown as OpenAI.ChatCompletion).choices?.[0]?.message
