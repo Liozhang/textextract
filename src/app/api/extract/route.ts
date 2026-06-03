@@ -229,12 +229,14 @@ export async function POST(request: NextRequest) {
     // Fallback: if content-length is absent (chunked encoding), estimate from
     // parsed file data to avoid silent degradation to base timeout.
     const baseTimeout = Number(process.env.API_TIMEOUT) || 120_000
-    let bodySizeMB = contentLength ? parseInt(contentLength, 10) / (1024 * 1024) : 0
-    if (bodySizeMB === 0 && files.length > 0) {
-      const estimatedBytes = files.reduce((sum, f) => sum + (f.dataUrl?.length || 0) + (f.content?.length || 0), 0)
-      bodySizeMB = estimatedBytes / (1024 * 1024)
+    // Per-file timeout: based on individual file size, capped at 300s.
+    // Align-merge uses 600s for long-format output; extraction per file is shorter.
+    const computePerFileTimeout = (dataUrlLength: number, attempt: number): number => {
+      const fileSizeMB = dataUrlLength / (1024 * 1024)
+      const sizeTimeout = baseTimeout + Math.ceil(fileSizeMB * 10_000)
+      const attemptFactor = attempt === 1 ? 1 : attempt === 2 ? 0.6 : 0.4
+      return Math.min(300_000, Math.floor(sizeTimeout * attemptFactor))
     }
-    const perCallTimeout = Math.min(600_000, baseTimeout + Math.ceil(bodySizeMB * 15_000))
 
     // All model settings from .env, overridden by user-provided settings
     const resolved = resolveApiSettings(body.apiSettings)
@@ -352,8 +354,10 @@ export async function POST(request: NextRequest) {
 
             let lastError = ''
             let retryMessages: OpenAI.ChatCompletionMessageParam[] = [...baseMessages]
+            const fileDataLen = file.dataUrl?.length || 0
 
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+              const perCallTimeout = computePerFileTimeout(fileDataLen, attempt)
               try {
                 if (attempt > 1) {
                   send('file_retry', { fileId, fileName, attempt })
