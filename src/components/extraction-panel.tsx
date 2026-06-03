@@ -21,7 +21,7 @@ import {
   parseSSEChunks,
   consumeSSEStream,
 } from '@/lib/pipeline-helpers';
-import { saveSession, clearSession, loadSession, getInterruptedSessions } from '@/lib/idb-storage';
+import { saveSession, clearSession } from '@/lib/idb-storage';
 import type { SessionData } from '@/lib/idb-storage';
 import {
   Card,
@@ -49,7 +49,22 @@ const INIT_PHASES: PipelinePhase[] = [
   { key: 'extracting', status: 'pending', detail: '' },
 ];
 
-const BATCH_SIZE = 5;
+function getBatchSize(fileCount: number): number {
+  if (fileCount <= 20) return 5;
+  if (fileCount <= 100) return 5;
+  if (fileCount <= 200) return 8;
+  return 10;
+}
+
+/** Format milliseconds into human-readable ETA string */
+function formatETA(ms: number, t: (key: string, params?: Record<string, number>) => string): string {
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 1) return t('review.etaSeconds', { count: Math.ceil(ms / 1000) });
+  if (minutes < 60) return t('review.etaMinutes', { count: minutes });
+  const hours = Math.floor(minutes / 60);
+  const remMin = minutes % 60;
+  return t('review.etaHours', { count: hours, minutes: remMin });
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -67,13 +82,17 @@ export default function ExtractionPanel() {
   const apiSettings = useStore((s) => s.apiSettings);
   const extractionSnapshot = useStore((s) => s.extractionSnapshot);
   const setExtractionSnapshot = useStore((s) => s.setExtractionSnapshot);
-  const clearKeyAlignmentResult = useStore((s) => s.clearKeyAlignmentResult);
-  const resetTemplate = useStore((s) => s.resetTemplate);
   const updateFile = useStore((s) => s.updateFile);
 
   const abortRef = useRef<AbortController | null>(null);
+  // Ref to track latest extraction state for beforeunload persistence
+  const sessionStateRef = useRef<{ sessionId: string; results: SessionData['results']; groups: SessionData['groups']; total: number } | null>(null);
   const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set());
-  const [previewResult, setPreviewResult] = useState<{ fileId: string; fileName: string; data: Record<string, unknown>; imageDataUrl?: string } | null>(null);
+  const [eta, setEta] = useState<string | null>(null);
+  const [batchTimings, setBatchTimings] = useState<number[]>([]);
+  const [currentBatch, setCurrentBatch] = useState(0);
+  const [totalBatches, setTotalBatches] = useState(0);
+  const [previewResult, setPreviewResult] = useState<{ fileId: string; fileName: string; data: Record<string, unknown>; entries?: Record<string, unknown>[]; imageDataUrl?: string } | null>(null);
   // Close preview on Escape key
   useEffect(() => {
     if (!previewResult) return;
@@ -112,42 +131,72 @@ export default function ExtractionPanel() {
   }, []);
 
   // ------------------------------------------------------------------
-  // Phase 1: Extract only (SSE stream to /api/extract, batched)
+  // Extract only (SSE stream to /api/extract, batched)
+  // Supports resume from interrupted session
   // ------------------------------------------------------------------
   const handleExtract = useCallback(async () => {
     if (isExtracting) return;
 
-    clearResults();
-    clearKeyAlignmentResult();
-    setHasExtracted(false);
-    setExtractionSnapshot(null);
-    setPhases([...INIT_PHASES]);
-    // Clear downstream data when re-extracting
-    setMergedExportData([]);
-    resetTemplate();
+    const snapshot = useStore.getState().extractionSnapshot;
+    const isResume = !!snapshot && snapshot.results.length > 0;
+
+    if (!isResume) {
+      clearResults();
+      setHasExtracted(false);
+      setExtractionSnapshot(null);
+      setPhases([...INIT_PHASES]);
+      setMergedExportData([]);
+    }
 
     // Generate session ID for IndexedDB persistence
-    const sessionId = crypto.randomUUID();
+    const sessionId = isResume ? crypto.randomUUID() : crypto.randomUUID();
 
-    // Clean up any previous server temp files before starting new extraction
-    const prevSessionIds = [...new Set(files.map((f) => f.sessionId).filter(Boolean))] as string[];
-    prevSessionIds.forEach((sid) => {
-      fetch(`/api/upload/${sid}`, { method: 'DELETE' }).catch(() => {});
-    });
+    // Clean up any previous server temp files before starting new (non-resume) extraction
+    if (!isResume) {
+      const prevSessionIds = [...new Set(files.map((f) => f.sessionId).filter(Boolean))] as string[];
+      prevSessionIds.forEach((sid) => {
+        fetch(`/api/upload/${sid}`, { method: 'DELETE' }).catch(() => {});
+      });
+    }
+
+    // Determine which files still need extraction
+    const existingResults = isResume ? snapshot!.results : [];
+    const completedFileIds = new Set(existingResults.filter((r) => r.success).map((r) => r.fileId));
+    const filesToExtract = isResume
+      ? files.filter((f) => !completedFileIds.has(f.id))
+      : files;
+
+    if (filesToExtract.length === 0) {
+      // All files already extracted
+      setProgress({ status: 'extraction_done' });
+      setHasExtracted(true);
+      return;
+    }
 
     const total = files.length;
+    const alreadyCompleted = existingResults.length;
     setProgress({
       totalFiles: total,
-      completedFiles: 0,
+      completedFiles: alreadyCompleted,
       currentFile: '',
       status: 'extracting',
     });
 
-    // Split files into batches of BATCH_SIZE
-    const allFileIds = files.map((f) => f.id);
+    // Initialize sessionStateRef for crash recovery persistence
+    sessionStateRef.current = {
+      sessionId,
+      results: [...existingResults],
+      groups: isResume && snapshot!.groups.length > 0 ? [...snapshot!.groups] : [],
+      total,
+    };
+
+    // Dynamic batch size based on total file count
+    const batchSize = getBatchSize(filesToExtract.length);
+
+    // Split files to extract into batches
     const batches: Array<{ ids: string[]; files: typeof files }> = [];
-    for (let i = 0; i < allFileIds.length; i += BATCH_SIZE) {
-      const ids = allFileIds.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < filesToExtract.length; i += batchSize) {
+      const ids = filesToExtract.slice(i, i + batchSize).map((f) => f.id);
       const batchFiles = files.filter((f) => ids.includes(f.id));
       batches.push({ ids, files: batchFiles });
     }
@@ -155,21 +204,68 @@ export default function ExtractionPanel() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    // Accumulated results across batches
+    // Accumulated results (start with existing if resuming)
     const accumulatedResults: Array<{
       fileId: string;
       fileName: string;
       groupId: string;
       success: boolean;
       data?: Record<string, unknown>;
+      entries?: Array<Record<string, unknown>>;
       error?: string;
-    }> = [];
-    let accumulatedGroups: Array<{ groupId: string; groupKey: string; fileCount: number }> = [];
+      imageDataUrl?: string;
+    }> = isResume ? [...existingResults] : [];
+    let accumulatedGroups: Array<{ groupId: string; groupKey: string; fileCount: number }> =
+      isResume && snapshot!.groups.length > 0 ? [...snapshot!.groups] : [];
+
+    setTotalBatches(batches.length);
+    setBatchTimings([]);
+    setEta(null);
+
+    // Collect all unique server session IDs for cleanup tracking
+    const allSessionIds = [...new Set(files.map((f) => f.sessionId).filter(Boolean))] as string[];
+
+    // Helper: synchronously persist current progress to localStorage for crash recovery
+    const persistToLocalStorage = () => {
+      try {
+        const state = sessionStateRef.current;
+        if (!state || state.results.length === 0) return;
+        const storeFiles = useStore.getState().files;
+        const storeColumns = useStore.getState().templateColumns;
+        const sIds = [...new Set(storeFiles.map((f) => f.sessionId).filter(Boolean))] as string[];
+        const payload: SessionData = {
+          sessionId: state.sessionId,
+          status: 'extracting',
+          results: state.results,
+          groups: state.groups,
+          completedBatches: state.results.filter((r) => r.success).length,
+          totalBatches: state.total,
+          createdAt: Date.now(),
+          files: storeFiles.map((f) => ({
+            id: f.id, name: f.name, size: f.size, type: f.type,
+            sessionId: f.sessionId ?? '', status: f.status,
+          })),
+          sessionIds: sIds,
+          templateColumns: storeColumns.length > 0 ? storeColumns : null,
+          extractionSnapshot: {
+            results: state.results.map(r => {
+              const { imageDataUrl, ...rest } = r as any;
+              return rest;
+            }),
+            groups: state.groups,
+          },
+          batchTimings: [],
+        };
+        localStorage.setItem('ocr-extract-interrupted', JSON.stringify(payload));
+      } catch { /* ignore */ }
+    };
 
     try {
       for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-        // Check abort before each batch
         if (controller.signal.aborted) break;
+
+        setCurrentBatch(batchIdx + 1);
+        const batchStartTime = Date.now();
 
         const { files: batchFiles } = batches[batchIdx];
         const isFirstBatch = batchIdx === 0;
@@ -193,6 +289,9 @@ export default function ExtractionPanel() {
               concurrency: apiSettings.concurrency || undefined,
             },
           } : {}),
+          ...(useStore.getState().templateColumns.length > 0
+            ? { templateColumns: useStore.getState().templateColumns }
+            : {}),
         };
 
         const response = await fetch('/api/extract', {
@@ -207,10 +306,8 @@ export default function ExtractionPanel() {
         }
 
         let batchCompleted = 0;
-        const batchTotal = batchFiles.length;
         const prevCompleted = accumulatedResults.length;
-        let extractedCount = 0;
-        accumulatedResults.forEach((r) => { if (r.success) extractedCount++; });
+        let extractedCount = accumulatedResults.filter((r) => r.success).length;
 
         await consumeSSEStream(response, (event, parsed) => {
           switch (event) {
@@ -239,7 +336,11 @@ export default function ExtractionPanel() {
                 );
               }
               if (!accumulatedGroups.length) {
-                accumulatedGroups = parsed.groups || [];
+                accumulatedGroups = (parsed.groups || []).map((g: any) => ({
+                  groupId: g.groupId ?? g.label ?? '',
+                  groupKey: g.groupKey ?? g.label ?? '',
+                  fileCount: g.fileCount ?? 1,
+                }));
               }
               break;
             }
@@ -288,10 +389,21 @@ export default function ExtractionPanel() {
                 data: parsed.data,
                 error: parsed.error,
               });
-              // 1.2: Clear file data from store after successful extraction
               if (parsed.success) {
                 updateFile(String(parsed.fileId ?? ''), { dataUrl: undefined, content: undefined });
               }
+              // Update ref for beforeunload persistence
+              if (sessionStateRef.current) {
+                sessionStateRef.current.results.push({
+                  fileId: String(parsed.fileId ?? ''),
+                  fileName: parsed.fileName ?? '',
+                  groupId: '',
+                  success: parsed.success ?? false,
+                  data: parsed.data,
+                  error: parsed.error,
+                });
+              }
+              persistToLocalStorage();
               break;
             }
 
@@ -303,11 +415,21 @@ export default function ExtractionPanel() {
                 groupId: r.groupId ?? '',
                 success: r.success ?? false,
                 data: r.data,
+                entries: r.entries,
                 error: r.error,
                 imageDataUrl: r.imageDataUrl,
               })));
               if (!accumulatedGroups.length) {
-                accumulatedGroups = parsed.groups || [];
+                accumulatedGroups = (parsed.groups || []).map((g: any) => ({
+                  groupId: g.groupId ?? g.label ?? '',
+                  groupKey: g.groupKey ?? g.label ?? '',
+                  fileCount: g.fileCount ?? 1,
+                }));
+              }
+              // Update ref with latest accumulated results + groups
+              if (sessionStateRef.current) {
+                sessionStateRef.current.results = [...accumulatedResults];
+                sessionStateRef.current.groups = [...accumulatedGroups];
               }
               break;
             }
@@ -327,13 +449,26 @@ export default function ExtractionPanel() {
                 error: parsed.message ?? t('review.unknownError'),
               });
               setHasExtracted(true);
-              return; // stop processing this batch
+              return;
             }
           }
         });
 
-        // If status was set to error, stop all batches
         if (useStore.getState().progress.status === 'error') break;
+
+        // Track batch timing for ETA
+        const batchDuration = Date.now() - batchStartTime;
+        setBatchTimings((prev) => {
+          const next = [...prev, batchDuration];
+          const avg = next.reduce((a, b) => a + b, 0) / next.length;
+          const remaining = batches.length - batchIdx - 1;
+          if (remaining > 0) {
+            setEta(formatETA(avg * remaining, t));
+          } else {
+            setEta(null);
+          }
+          return next;
+        });
 
         // Persist batch progress to IndexedDB (fire-and-forget)
         saveSession({
@@ -341,15 +476,30 @@ export default function ExtractionPanel() {
           status: 'extracting',
           results: accumulatedResults,
           groups: accumulatedGroups,
-          completedBatches: batchIdx + 1,
+          completedBatches: isResume ? snapshot!.results.filter((r) => r.success).length + batchIdx + 1 : batchIdx + 1,
           totalBatches: batches.length,
           createdAt: Date.now(),
+          files: useStore.getState().files.map((f) => ({
+            id: f.id,
+            name: f.name,
+            size: f.size,
+            type: f.type,
+            sessionId: f.sessionId ?? '',
+            status: f.status,
+          })),
+          sessionIds: allSessionIds,
+          templateColumns: useStore.getState().templateColumns.length > 0
+            ? useStore.getState().templateColumns
+            : null,
+          extractionSnapshot: { results: accumulatedResults, groups: accumulatedGroups },
+          batchTimings: [],
         }).catch(() => {});
+        // Also persist to localStorage as a fallback (survives page unload)
+        persistToLocalStorage();
       }
 
       // All batches complete — build final snapshot
       if (!controller.signal.aborted && useStore.getState().progress.status === 'extracting') {
-        // Fallback: if no groups from SSE, build from results
         if (!accumulatedGroups.length && accumulatedResults.length > 0) {
           accumulatedGroups = Array.from(
             new Map(accumulatedResults.map((r) => [r.groupId, { groupId: r.groupId, groupKey: r.fileName.split('.')[0], fileCount: 1 }])).values(),
@@ -368,20 +518,47 @@ export default function ExtractionPanel() {
         );
         setProgress({ status: 'extraction_done' });
         setHasExtracted(true);
-        // Clear IndexedDB session on successful completion
+        setEta(null);
+        sessionStateRef.current = null; // Clear ref — no need to persist anymore
+        localStorage.removeItem('ocr-extract-interrupted');
         clearSession(sessionId).catch(() => {});
-        // NOTE: Do NOT clean up server temp files here — handleRetryFailed may need them
-        // Temp files will be cleaned up when user navigates away or starts a new extraction
+        // Clean up server temp files on successful completion
+        allSessionIds.forEach((sid) => {
+          fetch(`/api/upload/${sid}`, { method: 'DELETE' }).catch(() => {});
+        });
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
-        // Preserve extraction_done if we already have results from previous batches
         if (accumulatedResults.length > 0) {
           setExtractionSnapshot({
             results: accumulatedResults,
             groups: accumulatedGroups,
           });
           setProgress({ status: 'extraction_done', currentFile: '' });
+          // Persist interrupted session to IndexedDB for resume
+          saveSession({
+            sessionId,
+            status: 'extracting',
+            results: accumulatedResults,
+            groups: accumulatedGroups,
+            completedBatches: accumulatedResults.filter((r) => r.success).length,
+            totalBatches: total,
+            createdAt: Date.now(),
+            files: useStore.getState().files.map((f) => ({
+              id: f.id,
+              name: f.name,
+              size: f.size,
+              type: f.type,
+              sessionId: f.sessionId ?? '',
+              status: f.status,
+            })),
+            sessionIds: allSessionIds,
+            templateColumns: useStore.getState().templateColumns.length > 0
+              ? useStore.getState().templateColumns
+              : null,
+            extractionSnapshot: { results: accumulatedResults, groups: accumulatedGroups },
+            batchTimings: [],
+          }).catch(() => {});
         } else {
           setProgress({ status: 'idle', currentFile: '' });
           clearSession(sessionId).catch(() => {});
@@ -412,6 +589,10 @@ export default function ExtractionPanel() {
       }
     } finally {
       abortRef.current = null;
+      setEta(null);
+      setCurrentBatch(0);
+      setTotalBatches(0);
+      setBatchTimings([]);
     }
   }, [
     files,
@@ -422,7 +603,6 @@ export default function ExtractionPanel() {
     updateFile,
     setExtractionSnapshot,
     setMergedExportData,
-    resetTemplate,
     t,
   ]);
 
@@ -466,6 +646,9 @@ export default function ExtractionPanel() {
       ...(useStore.getState().apiSettings.baseUrl || useStore.getState().apiSettings.apiKey || useStore.getState().apiSettings.model ? {
         apiSettings: useStore.getState().apiSettings,
       } : {}),
+      ...(useStore.getState().templateColumns.length > 0
+        ? { templateColumns: useStore.getState().templateColumns }
+        : {}),
     };
 
     const controller = new AbortController();
@@ -629,7 +812,7 @@ export default function ExtractionPanel() {
     } finally {
       abortRef.current = null;
     }
-  }, [t, setProgress, setExtractionSnapshot, clearKeyAlignmentResult]);
+  }, [t, setProgress, setExtractionSnapshot]);
 
   // Convenience: retry all failed files
   const handleRetryFailed = useCallback(() => {
@@ -718,13 +901,32 @@ export default function ExtractionPanel() {
 
         {/* ---------- File-level progress during extraction ---------- */}
         {isExtracting && phases[1]?.status === 'active' && (
-          <div className="flex items-center justify-between text-sm text-muted-foreground">
-            <span className="truncate">
-              {progress.currentFile || t('review.preparing')}
-            </span>
-            <span className="font-medium tabular-nums">
-              {progress.completedFiles} / {progress.totalFiles}
-            </span>
+          <div className="flex flex-col gap-1.5">
+            {/* Progress bar */}
+            <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+              <div
+                className="h-full rounded-full bg-primary transition-all duration-300"
+                style={{ width: `${progress.totalFiles > 0 ? (progress.completedFiles / progress.totalFiles) * 100 : 0}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-sm text-muted-foreground">
+              <span className="truncate">
+                {progress.currentFile || t('review.preparing')}
+              </span>
+              <span className="font-medium tabular-nums">
+                {progress.completedFiles} / {progress.totalFiles}
+                {totalBatches > 1 && (
+                  <span className="text-xs ml-2">
+                    {t('review.batchProgress', { current: currentBatch, total: totalBatches })}
+                  </span>
+                )}
+              </span>
+            </div>
+            {eta && (
+              <p className="text-xs text-muted-foreground/70">
+                {t('review.eta', { time: eta })}
+              </p>
+            )}
           </div>
         )}
 
@@ -851,12 +1053,18 @@ export default function ExtractionPanel() {
                         )}
                       </td>
                       <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">
-                        {r.success && r.data ? Object.keys(r.data).length : '\u2014'}
+                        {r.success && r.data ? Object.keys(r.data).length : r.success && r.entries ? r.entries.length : '\u2014'}
                       </td>
                       <td className="px-2 py-1.5">
-                        {(r.success && r.data) || r.imageDataUrl ? (
+                        {(r.success && (r.data || r.entries)) || r.imageDataUrl ? (
                           <button
-                            onClick={() => setPreviewResult({ fileId: r.fileId, fileName: r.fileName, data: r.data ?? {}, imageDataUrl: r.imageDataUrl })}
+                            onClick={() => setPreviewResult({
+                              fileId: r.fileId,
+                              fileName: r.fileName,
+                              data: r.data ?? {},
+                              entries: Array.isArray(r.entries) ? r.entries as Record<string, unknown>[] : undefined,
+                              imageDataUrl: r.imageDataUrl,
+                            })}
                             className="text-muted-foreground hover:text-primary transition-colors"
                             title={t('review.preview')}
                           >
@@ -894,22 +1102,54 @@ export default function ExtractionPanel() {
                         />
                       </div>
                     )}
-                    {/* Extracted JSON */}
-                    <div className="space-y-2">
-                      <span className="text-xs font-medium text-muted-foreground">
-                        {t('review.fieldsCount', { count: Object.keys(previewResult.data).length })}
-                      </span>
-                      <div className="max-h-[300px] overflow-auto rounded-md border p-2">
-                        {Object.entries(previewResult.data).map(([key, value]) => (
-                          <div key={key} className="flex gap-2 text-sm py-0.5 border-b border-muted/30 last:border-0">
-                            <span className="font-medium text-muted-foreground shrink-0 min-w-[120px]">{key}</span>
-                            <span className="break-all">
-                              {typeof value === 'string' ? value : JSON.stringify(value)}
-                            </span>
-                          </div>
-                        ))}
+                    {/* Extracted JSON / Entries */}
+                    {previewResult.entries && previewResult.entries.length > 0 ? (
+                      <div className="space-y-2">
+                        <span className="text-xs font-medium text-muted-foreground">
+                          {t('review.entriesCount', { count: previewResult.entries.length })}
+                        </span>
+                        <div className="max-h-[300px] overflow-auto rounded-md border">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="border-b bg-muted/50 text-left text-muted-foreground">
+                                <th className="px-2 py-1.5 w-8">#</th>
+                                {Object.keys(previewResult.entries[0]).map((col) => (
+                                  <th key={col} className="px-2 py-1.5">{col}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {previewResult.entries.map((row, idx) => (
+                                <tr key={idx} className="border-b border-muted/30 last:border-0">
+                                  <td className="px-2 py-1 text-muted-foreground tabular-nums">{idx + 1}</td>
+                                  {Object.values(row).map((val, ci) => (
+                                    <td key={ci} className="px-2 py-1 break-all">
+                                      {typeof val === 'string' ? val : JSON.stringify(val)}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <span className="text-xs font-medium text-muted-foreground">
+                          {t('review.fieldsCount', { count: Object.keys(previewResult.data).length })}
+                        </span>
+                        <div className="max-h-[300px] overflow-auto rounded-md border p-2">
+                          {Object.entries(previewResult.data).map(([key, value]) => (
+                            <div key={key} className="flex gap-2 text-sm py-0.5 border-b border-muted/30 last:border-0">
+                              <span className="font-medium text-muted-foreground shrink-0 min-w-[120px]">{key}</span>
+                              <span className="break-all">
+                                {typeof value === 'string' ? value : JSON.stringify(value)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               </div>

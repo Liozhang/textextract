@@ -4,13 +4,17 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { existsSync } from 'fs'
 import { randomUUID } from 'crypto'
+import { cleanupExpiredSessions } from '@/lib/server-cleanup'
 
 export const maxDuration = 60
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB per file
-const MAX_TOTAL_SIZE = 500 * 1024 * 1024 // 500MB total
+const MAX_FILE_SIZE = 100 * 1024 * 1024 // 100MB per file
+const MAX_TOTAL_SIZE = 2 * 1024 * 1024 * 1024 // 2GB total per chunk
 
 export async function POST(request: NextRequest) {
+  // Fire-and-forget: clean up expired temp sessions
+  cleanupExpiredSessions()
+
   try {
     const formData = await request.formData()
     const files: File[] = []
@@ -68,6 +72,12 @@ export async function POST(request: NextRequest) {
         type: file.type || 'application/octet-stream',
       })
     }
+
+    // Write session metadata for cleanup tracking
+    await writeFile(
+      join(sessionDir, '_meta.json'),
+      JSON.stringify({ createdAt: Date.now(), fileCount: savedFiles.length }),
+    )
 
     return new Response(
       JSON.stringify({ sessionId, files: savedFiles }),

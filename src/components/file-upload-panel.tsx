@@ -21,13 +21,14 @@ import { Badge } from '@/components/ui/badge';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import type { AppFile } from '@/lib/store';
-import { generateId, formatFileSize } from '@/lib/utils';
+import { formatFileSize } from '@/lib/utils';
 
-// ---- helpers ----
+// ---- constants ----
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB per file
-const MAX_FILE_COUNT = 100;
-const IMAGE_COMPRESS_THRESHOLD = 1 * 1024 * 1024; // 1MB — compress images above this
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB per file
+const MAX_FILE_COUNT = 500;
+const UPLOAD_CHUNK_SIZE = 20; // files per chunk
+const IMAGE_COMPRESS_THRESHOLD = 1 * 1024 * 1024; // 1MB
 const IMAGE_MAX_WIDTH = 2048;
 const IMAGE_QUALITY = 0.85;
 
@@ -47,6 +48,8 @@ const ACCEPTED_EXTENSIONS = [
 ];
 
 const ACCEPT_STRING = ACCEPTED_EXTENSIONS.join(',');
+
+// ---- helpers ----
 
 /** Compress an image file using Canvas if it exceeds the size threshold */
 function compressImage(file: File): Promise<File> {
@@ -119,30 +122,54 @@ function getStatusBadge(t: ReturnType<typeof useT>, status: AppFile['status']) {
   }
 }
 
-/** Upload files to server and return sessionId + file metadata */
-async function uploadFilesToServer(rawFiles: File[]): Promise<{
+/** Upload a single chunk of files to server */
+async function uploadChunk(files: File[]): Promise<{
   sessionId: string;
   files: Array<{ fileId: string; name: string; size: number; type: string }>;
 } | null> {
-  try {
-    // Compress images before upload
-    const compressedFiles = await Promise.all(rawFiles.map(compressImage));
-
-    const formData = new FormData();
-    for (const f of compressedFiles) {
-      formData.append('files', f);
-    }
-    const res = await fetch('/api/upload', { method: 'POST', body: formData });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Upload failed' }));
-      toast.error(err.error || 'Upload failed');
-      return null;
-    }
-    return await res.json();
-  } catch {
-    toast.error('Upload failed');
+  const compressedFiles = await Promise.all(files.map(compressImage));
+  const formData = new FormData();
+  for (const f of compressedFiles) {
+    formData.append('files', f);
+  }
+  const res = await fetch('/api/upload', { method: 'POST', body: formData });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Upload failed' }));
+    toast.error(err.error || 'Upload failed');
     return null;
   }
+  return await res.json();
+}
+
+/** Upload files in chunks of UPLOAD_CHUNK_SIZE, reporting progress via callback */
+async function uploadFilesChunked(
+  rawFiles: File[],
+  onProgress: (chunk: number, total: number) => void,
+): Promise<Array<{
+  sessionId: string;
+  files: Array<{ fileId: string; name: string; size: number; type: string }>;
+}>> {
+  const chunks: File[][] = [];
+  for (let i = 0; i < rawFiles.length; i += UPLOAD_CHUNK_SIZE) {
+    chunks.push(rawFiles.slice(i, i + UPLOAD_CHUNK_SIZE));
+  }
+
+  const results: Array<{
+    sessionId: string;
+    files: Array<{ fileId: string; name: string; size: number; type: string }>;
+  }> = [];
+
+  for (let i = 0; i < chunks.length; i++) {
+    onProgress(i + 1, chunks.length);
+    const result = await uploadChunk(chunks[i]);
+    if (result) {
+      results.push(result);
+    } else {
+      toast.error(`Chunk ${i + 1}/${chunks.length} failed, ${chunks[i].length} files skipped`);
+    }
+  }
+
+  return results;
 }
 
 // ---- component ----
@@ -155,10 +182,11 @@ export default function FileUploadPanel() {
   const clearFiles = useStore((s) => s.clearFiles);
   const progress = useStore((s) => s.progress);
 
-  const isPipelineActive = progress.status === 'extracting' || progress.status === 'keys_aligning' || progress.status === 'aligning_merging';
+  const isPipelineActive = progress.status === 'extracting' || progress.status === 'aligning_merging';
 
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Add files from a FileList
@@ -197,21 +225,28 @@ export default function FileUploadPanel() {
 
       if (validFiles.length === 0) return;
 
-      // Upload to server first
+      // Upload to server in chunks
       setUploading(true);
-      const uploadResult = await uploadFilesToServer(validFiles);
+      setUploadProgress(null);
+      const chunkResults = await uploadFilesChunked(validFiles, (current, total) => {
+        setUploadProgress({ current, total });
+      });
       setUploading(false);
+      setUploadProgress(null);
 
-      if (!uploadResult) return;
+      if (chunkResults.length === 0) return;
 
-      const newAppFiles: AppFile[] = uploadResult.files.map((f) => ({
-        id: f.fileId,
-        name: f.name,
-        size: f.size,
-        type: f.type,
-        status: 'parsed' as const,
-        sessionId: uploadResult.sessionId,
-      }));
+      // Merge all chunk results into AppFiles
+      const newAppFiles: AppFile[] = chunkResults.flatMap((r) =>
+        r.files.map((f) => ({
+          id: f.fileId,
+          name: f.name,
+          size: f.size,
+          type: f.type,
+          status: 'parsed' as const,
+          sessionId: r.sessionId,
+        })),
+      );
 
       addFiles(newAppFiles);
     },
@@ -296,7 +331,9 @@ export default function FileUploadPanel() {
             <Upload className={`size-10 ${dragOver ? 'text-primary' : 'text-muted-foreground'}`} />
           )}
           <p className="text-sm text-center text-muted-foreground">
-            {t('upload.dropzone')}
+            {uploading && uploadProgress
+              ? t('upload.uploadingProgress', { current: uploadProgress.current, total: uploadProgress.total })
+              : t('upload.dropzone')}
           </p>
           <p className="text-xs text-muted-foreground/70">
             {t('upload.supported')} {ACCEPTED_EXTENSIONS.join(', ')}

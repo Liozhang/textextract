@@ -6,12 +6,14 @@ import { useHydrated } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import FileUploadPanel from '@/components/file-upload-panel';
 import ExtractionPanel from '@/components/extraction-panel';
-import MergeKeysPanel from '@/components/merge-keys-panel';
 import TemplateStepPanel from '@/components/template-step-panel';
 import AlignMergePanel from '@/components/align-merge-panel';
 import ExportPanel from '@/components/export-panel';
 import LanguageSwitcher from '@/components/language-switcher';
 import PromptSettings from '@/components/prompt-settings';
+import ResumeBanner from '@/components/resume-banner';
+import { getInterruptedSessions } from '@/lib/idb-storage';
+import type { SessionData } from '@/lib/idb-storage';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
@@ -36,9 +38,8 @@ import {
 
 const STEPS = [
   { key: 'upload', icon: Upload },
-  { key: 'extract', icon: Layers },
-  { key: 'merge_keys', icon: GitMerge },
   { key: 'template', icon: LayoutTemplate },
+  { key: 'extract', icon: Layers },
   { key: 'align_merge', icon: GitMerge },
   { key: 'export', icon: Download },
 ] as const;
@@ -49,6 +50,7 @@ export default function Home() {
   const progress = useStore((s) => s.progress);
   const files = useStore((s) => s.files);
   const resetAll = useStore((s) => s.resetAll);
+  const setInterruptedSession = useStore((s) => s.setInterruptedSession);
   const hydrated = useHydrated();
   const t = useT();
 
@@ -60,6 +62,29 @@ export default function Home() {
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
+
+  // Check for interrupted sessions on mount (IndexedDB + localStorage fallback)
+  useEffect(() => {
+    if (!hydrated) return;
+    getInterruptedSessions().then((sessions) => {
+      if (sessions.length > 0) {
+        // Take the most recent session
+        const latest = sessions.sort((a, b) => b.createdAt - a.createdAt)[0];
+        setInterruptedSession(latest);
+        return;
+      }
+      // Check localStorage for beforeunload-persisted session
+      try {
+        const raw = localStorage.getItem('ocr-extract-interrupted');
+        if (raw) {
+          const session = JSON.parse(raw) as SessionData;
+          if (session.status === 'extracting' && session.results?.length > 0) {
+            setInterruptedSession(session);
+          }
+        }
+      } catch { /* ignore */ }
+    });
+  }, [hydrated, setInterruptedSession]);
 
   // Warn before leaving page when there is unsaved progress
   useEffect(() => {
@@ -87,11 +112,11 @@ export default function Home() {
   const currentStepIndex = STEPS.findIndex((s) => s.key === step);
 
   const canGoNext = () => {
-    if (step === 'upload') return files.length > 0 && progress.status !== 'extracting';
-    if (step === 'extract') return progress.status === 'extraction_done' || progress.status === 'keys_aligned';
-    if (step === 'merge_keys') return progress.status === 'extraction_done' || progress.status === 'keys_aligned';
-    if (step === 'template') return progress.status === 'template_done' || progress.status === 'done';
+    if (step === 'upload') return files.length > 0;
+    if (step === 'template') return progress.status === 'template_configured' || progress.status === 'extraction_done' || progress.status === 'done';
+    if (step === 'extract') return progress.status === 'extraction_done' || progress.status === 'done';
     if (step === 'align_merge') return progress.status === 'done';
+    if (step === 'export') return true;
     return false;
   };
 
@@ -102,7 +127,7 @@ export default function Home() {
     }
   };
 
-  const isPipelineActive = progress.status === 'extracting' || progress.status === 'keys_aligning' || progress.status === 'aligning_merging';
+  const isPipelineActive = progress.status === 'extracting' || progress.status === 'aligning_merging';
 
   const goPrev = () => {
     const idx = STEPS.findIndex((s) => s.key === step);
@@ -112,9 +137,8 @@ export default function Home() {
   };
 
   const isStepCompleted = (stepKey: (typeof STEPS)[number]['key']) => {
-    if (stepKey === 'extract') return progress.status === 'extraction_done' || progress.status === 'keys_aligned' || progress.status === 'done';
-    if (stepKey === 'merge_keys') return progress.status === 'keys_aligned' || progress.status === 'done';
-    if (stepKey === 'template') return progress.status === 'template_done' || progress.status === 'done';
+    if (stepKey === 'template') return progress.status === 'template_configured' || progress.status === 'extraction_done' || progress.status === 'done';
+    if (stepKey === 'extract') return progress.status === 'extraction_done' || progress.status === 'done';
     if (stepKey === 'align_merge') return progress.status === 'done';
     // Mark previous steps as completed if we're past them
     const idx = STEPS.findIndex((s) => s.key === stepKey);
@@ -193,12 +217,14 @@ export default function Home() {
         </CardContent>
       </Card>
 
+      {/* Resume Banner */}
+      <ResumeBanner />
+
       {/* Step Content */}
       <div className="space-y-6">
         {step === 'upload' && <FileUploadPanel />}
-        {step === 'extract' && <ExtractionPanel />}
-        {step === 'merge_keys' && <MergeKeysPanel />}
         {step === 'template' && <TemplateStepPanel />}
+        {step === 'extract' && <ExtractionPanel />}
         {step === 'align_merge' && <AlignMergePanel />}
         {step === 'export' && <ExportPanel />}
       </div>

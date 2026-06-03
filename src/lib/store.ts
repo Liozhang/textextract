@@ -2,18 +2,21 @@ import React from 'react';
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { detectLocale, type Locale } from './i18n';
+import type { SessionData } from './idb-storage';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type WizardStep = 'upload' | 'extract' | 'merge_keys' | 'template' | 'align_merge' | 'export';
+export type WizardStep = 'upload' | 'template' | 'extract' | 'align_merge' | 'export';
 
 export interface ColumnConstraint {
   key: string;
   type: 'string' | 'number' | 'boolean';
   description: string;
   example?: string;
+  /** If true, this column can have multiple values per document (e.g., table rows) */
+  repeating?: boolean;
 }
 
 export interface AppFile {
@@ -44,7 +47,7 @@ export interface ExtractionResultItem {
   error?: string;
 }
 
-export type ExtractionStatus = 'idle' | 'extracting' | 'extraction_done' | 'keys_aligning' | 'keys_aligned' | 'template_done' | 'aligning_merging' | 'done' | 'error';
+export type ExtractionStatus = 'idle' | 'template_configured' | 'extracting' | 'extraction_done' | 'aligning_merging' | 'done' | 'error';
 
 export interface ExtractionProgress {
   totalFiles: number;
@@ -61,7 +64,6 @@ export interface ExportSettings {
 
 export interface PromptSettings {
   extraction: string;
-  keyAlign: string;
   merge: string;
   templateAlign: string;
   templateGenerate: string;
@@ -143,6 +145,7 @@ export interface AppState {
       groupId: string;
       success: boolean;
       data?: Record<string, unknown>;
+      entries?: Array<Record<string, unknown>>;
       imageDataUrl?: string;
       error?: string;
     }>;
@@ -151,21 +154,17 @@ export interface AppState {
   setExtractionSnapshot: (snapshot: AppState['extractionSnapshot']) => void;
   clearExtractionSnapshot: () => void;
 
-  // Key alignment result (transient, not persisted)
-  keyAlignmentResult: {
-    fieldMapping: Record<string, string>;
-    fieldOrder: string[];
-    aiFailed: boolean;
-  } | null;
-  setKeyAlignmentResult: (result: AppState['keyAlignmentResult']) => void;
-  clearKeyAlignmentResult: () => void;
-
   // Merged export data (synced from review panel after backend pipeline)
   mergedExportData: MergedExportRow[];
   setMergedExportData: (rows: MergedExportRow[]) => void;
 
   // Reset everything
   resetAll: () => void;
+
+  // Resume interrupted session
+  interruptedSession: SessionData | null;
+  setInterruptedSession: (session: SessionData | null) => void;
+  restoreFromSession: (session: SessionData) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +184,6 @@ const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
 
 const DEFAULT_PROMPT_SETTINGS: PromptSettings = {
   extraction: '',
-  keyAlign: '',
   merge: '',
   templateAlign: '',
   templateGenerate: '',
@@ -289,11 +287,6 @@ export const useStore = create<AppState>()(
       setExtractionSnapshot: (snapshot) => set({ extractionSnapshot: snapshot }),
       clearExtractionSnapshot: () => set({ extractionSnapshot: null }),
 
-      // --- Key Alignment Result (transient) ---
-      keyAlignmentResult: null,
-      setKeyAlignmentResult: (result) => set({ keyAlignmentResult: result }),
-      clearKeyAlignmentResult: () => set({ keyAlignmentResult: null }),
-
       // --- Merged export data ---
       mergedExportData: [],
       setMergedExportData: (rows) => set({ mergedExportData: rows }),
@@ -303,6 +296,33 @@ export const useStore = create<AppState>()(
       selectedFileId: null,
       setSelectedField: (field) => set({ selectedField: field }),
       setSelectedFileId: (fileId) => set({ selectedFileId: fileId }),
+
+      // --- Resume ---
+      interruptedSession: null,
+      setInterruptedSession: (session) => set({ interruptedSession: session }),
+      restoreFromSession: (session) =>
+        set({
+          step: 'extract',
+          files: session.files.map((f) => ({
+            id: f.id,
+            name: f.name,
+            size: f.size,
+            type: f.type,
+            status: 'parsed' as const,
+            sessionId: f.sessionId,
+          })),
+          templateColumns: session.templateColumns ?? [],
+          extractionSnapshot: session.extractionSnapshot,
+          progress: {
+            totalFiles: session.files.length,
+            completedFiles: session.results.length,
+            currentFile: '',
+            status: 'extraction_done',
+          },
+          interruptedSession: null,
+          results: [],
+          mergedExportData: [],
+        }),
 
       // --- Reset ---
       resetAll: () =>
@@ -317,7 +337,6 @@ export const useStore = create<AppState>()(
           templatePrompt: '',
           templateGenerated: false,
           extractionSnapshot: null,
-          keyAlignmentResult: null,
           selectedField: null,
           selectedFileId: null,
           mergedExportData: [],
@@ -356,7 +375,17 @@ export const useStore = create<AppState>()(
       },
       // Skip hydration on server; the `mounted` flag is used client-side
       skipHydration: true,
-      version: 3,
+      version: 4,
+      migrate: (persisted: any, version: number) => {
+        if (version < 4) {
+          // Remove keyAlign from promptSettings
+          if (persisted?.promptSettings) {
+            const { keyAlign, ...rest } = persisted.promptSettings;
+            persisted.promptSettings = rest;
+          }
+        }
+        return persisted;
+      },
     },
   ),
 );

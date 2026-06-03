@@ -8,6 +8,7 @@ import { tmpdir } from 'os'
 
 import { parseJsonResponse } from '@/lib/pipeline/json-parser'
 import { isPrivateHost, sseEvent, workerPool, resolveApiSettings } from '@/lib/api-utils'
+import { cleanupExpiredSessions } from '@/lib/server-cleanup'
 
 export const maxDuration = 300
 import { groupFilesByPrefix, findGroupForFile } from '@/lib/pipeline/file-grouper'
@@ -210,6 +211,9 @@ function flattenObject(obj: Record<string, unknown>, prefix = ''): Record<string
 const MAX_REQUEST_SIZE = 100 * 1024 * 1024 // 100MB
 
 export async function POST(request: NextRequest) {
+  // Fire-and-forget: clean up expired temp sessions
+  cleanupExpiredSessions()
+
   const abortController = new AbortController()
 
   try {
