@@ -61,6 +61,18 @@ export default function Home() {
     document.documentElement.lang = locale;
   }, [locale]);
 
+  // Warn before leaving page when there is unsaved progress
+  useEffect(() => {
+    const hasProgress = files.length > 0 || progress.status !== 'idle';
+    if (!hasProgress) return;
+
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [files.length, progress.status]);
+
   // Prevent hydration mismatch - show nothing until store is hydrated
   if (!hydrated) {
     return (

@@ -758,6 +758,9 @@ export default function ExtractionPanel() {
                   failed: extractionSummary.failed,
                 })}
               </span>
+              <span className="text-xs text-muted-foreground/60 border-l pl-2 ml-1">
+                {t('review.multiValueNote')}
+              </span>
               <div className="flex-1" />
               <Button
                 variant="ghost"

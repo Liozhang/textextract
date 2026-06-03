@@ -69,18 +69,30 @@ export default function AlignMergePanel() {
   const setStep = useStore((s) => s.setStep);
 
   const abortRef = useRef<AbortController | null>(null);
+  const intentionalAbortRef = useRef(false);
   const [showDetails, setShowDetails] = useState(false);
   const [retryingGroupId, setRetryingGroupId] = useState<string | null>(null);
 
   const [pipelineRows, setPipelineRows] = useState<PipelineRow[]>([]);
   const [schemaHeaders, setSchemaHeaders] = useState<string[]>([]);
   const [schemaAlignFallback, setSchemaAlignFallback] = useState(false);
-  const [phases, setPhases] = useState<PipelinePhase[]>(
-    progress.status === 'done' ? [...ALL_DONE_PHASES] : [...INIT_PHASES],
-  );
+  const [phases, setPhases] = useState<PipelinePhase[]>(() => {
+    if (progress.status === 'done') return [...ALL_DONE_PHASES];
+    const base: PipelinePhase[] = [
+      { key: 'grouping', status: 'done' as const, detail: '' },
+      { key: 'extracting', status: 'done' as const, detail: '' },
+      { key: 'merging', status: 'pending' as const, detail: '' },
+    ];
+    if (hasTemplateColumns) {
+      base.push({ key: 'aligning', status: 'pending' as const, detail: '' });
+    }
+    return base;
+  });
 
   const isAligning = progress.status === 'aligning_merging';
   const isDone = progress.status === 'done';
+  const isError = progress.status === 'error';
+  const isStopped = progress.status === 'extraction_done' && pipelineRows.length === 0;
   const hasTemplateColumns = useStore((s) => s.templateColumns.length > 0);
 
   const mergedHeaders = useMemo(() => {
@@ -123,6 +135,7 @@ export default function AlignMergePanel() {
   // Abort
   // ------------------------------------------------------------------
   const handleAbort = useCallback(() => {
+    intentionalAbortRef.current = true;
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
@@ -345,7 +358,14 @@ export default function AlignMergePanel() {
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
-        // no-op — handleAbort sets state
+        // If abort was NOT intentional (e.g., HMR refresh, component unmount),
+        // reset progress so the UI shows the "start" button on re-mount
+        if (!intentionalAbortRef.current) {
+          setProgress({ status: 'extraction_done' });
+          setPhases((prev) =>
+            prev.map((p) => (p.status === 'active' ? { ...p, status: 'pending', detail: '' } : p)),
+          );
+        }
       } else {
         setPhases((prev) =>
           prev.map((p) => {
@@ -472,11 +492,37 @@ export default function AlignMergePanel() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <GitMerge className="size-5" />
-          {t('review.alignMergeInProgress')}
+          {isDone
+            ? t('review.alignMergeComplete')
+            : isAligning
+              ? t('review.alignMergeInProgress')
+              : t('review.alignMergeReady')}
         </CardTitle>
       </CardHeader>
 
       <CardContent className="flex flex-col gap-6">
+        {/* Idle / stopped / error — show start button */}
+        {!isAligning && !isDone && (
+          <div className="flex flex-col gap-3 items-center py-8">
+            <p className="text-sm text-muted-foreground">
+              {isError ? t('review.error') : isStopped ? t('review.alignMergeStopped') : t('review.alignMergeHint')}
+            </p>
+            <div className="flex gap-2">
+              <Button onClick={() => {
+                intentionalAbortRef.current = false;
+                handleAlignMerge();
+              }}>
+                <GitMerge className="size-4" />
+                {isError || isStopped ? t('review.retryAlign') : t('review.startAlignMerge')}
+              </Button>
+              <Button variant="outline" onClick={handleReconfigure}>
+                <RotateCcw className="size-4" />
+                {t('review.reconfigure')}
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Align & Merge in progress */}
         {isAligning && (
           <div className="flex flex-col gap-4">

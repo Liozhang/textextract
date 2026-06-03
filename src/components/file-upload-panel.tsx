@@ -8,7 +8,7 @@ import {
   FileSpreadsheet,
   FileImage,
   FileType2,
-  File,
+  File as FileIcon,
   Trash2,
   Loader2,
 } from 'lucide-react';
@@ -76,7 +76,6 @@ function compressImage(file: File): Promise<File> {
       canvas.toBlob(
         (blob) => {
           if (blob && blob.size < file.size) {
-            // @ts-expect-error File constructor differs between browser and Node types
             resolve(new File([blob], file.name, { type: 'image/jpeg' }));
           } else {
             resolve(file);
@@ -106,7 +105,7 @@ function getFileIcon(name: string) {
   if (['.docx'].includes(ext)) return <FileType2 className="size-5 text-blue-500" />;
   if (['.pdf'].includes(ext)) return <FileText className="size-5 text-red-500" />;
   if (['.txt', '.md', '.json'].includes(ext)) return <FileText className="size-5 text-orange-500" />;
-  return <File className="size-5 text-muted-foreground" />;
+  return <FileIcon className="size-5 text-muted-foreground" />;
 }
 
 function getStatusBadge(t: ReturnType<typeof useT>, status: AppFile['status']) {

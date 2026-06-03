@@ -412,6 +412,28 @@ export async function POST(request: NextRequest) {
                   imageDataUrl = file.dataUrl
                 }
 
+                // Post-processing guards
+                // Guard against empty results
+                if (Object.keys(finalData).length === 0) {
+                  lastError = '提取结果为空'
+                  continue
+                }
+
+                // Guard against malformed keys (e.g., ": :" prefix, empty keys)
+                const cleanedData: Record<string, unknown> = {}
+                for (const [k, v] of Object.entries(finalData)) {
+                  const cleanedKey = k.replace(/^[\s:;|，、\-]+/, '').trim()
+                  if (cleanedKey) cleanedData[cleanedKey] = v
+                }
+                finalData = cleanedData
+
+                // Guard against concatenated table-header keys (too many hyphen segments)
+                const suspiciousKeys = Object.keys(finalData).filter(k => k.split('-').length > 5)
+                if (suspiciousKeys.length > 0 && Object.keys(finalData).length <= 5) {
+                  lastError = `疑似表格键名连接: ${suspiciousKeys.slice(0, 3).join(', ')}`
+                  continue
+                }
+
                 perFileResults.push({
                   fileId,
                   fileName,

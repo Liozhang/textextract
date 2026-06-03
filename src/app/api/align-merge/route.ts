@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server'
 import OpenAI from 'openai'
 
-export const maxDuration = 300
+export const maxDuration = 600
 
 import { mergeGroupWithAI, alignToTemplateWithAI, normalizeValue } from '@/lib/pipeline/merge-agent'
 import { isPrivateHost, sseEvent, workerPool, resolveApiSettings } from '@/lib/api-utils'
@@ -134,8 +134,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Per-call timeout for AI calls
+    // Use a generous timeout: base from env (default 120s) or 300s, whichever is larger.
+    // Template alignment with long-format output needs extra time for multi-entry generation.
     const baseTimeout = Number(process.env.API_TIMEOUT) || 120_000
-    const perCallTimeout = Math.min(600_000, baseTimeout)
+    const perCallTimeout = Math.min(600_000, Math.max(600_000, baseTimeout))
 
     // Resolve prompts
     const mergePrompt = customPrompts?.merge || MERGE_SYSTEM_MESSAGE

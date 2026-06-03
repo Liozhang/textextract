@@ -45,6 +45,7 @@ const en = {
     generating: 'Generating...',
     skip: 'Skip (auto-detect columns)',
     confirmUse: 'Use Template',
+    confirmDisabledHint: 'Generate or add template columns first',
     key: 'Column Name',
     type: 'Type',
     desc: 'Description',
@@ -178,10 +179,16 @@ const en = {
     configureTemplateTitle: 'Configure Template (Optional)',
     configureTemplateDesc: 'Configure output columns based on extraction results, or skip for auto-detection',
     alignMergeInProgress: 'Aligning & Merging...',
+    alignMergeReady: 'Align & Merge',
+    alignMergeComplete: 'Align & Merge Complete',
+    alignMergeStopped: 'Stopped. Click to retry.',
+    alignMergeHint: 'Click to start aligning and merging extracted data.',
+    startAlignMerge: 'Start Align & Merge',
     retryFailed: 'Retry Failed ({{count}})',
     retrySelected: 'Retry Selected ({{count}})',
     selectAll: 'Select All',
     deselectAll: 'Deselect All',
+    multiValueNote: 'Multiple values joined with "; "',
     preview: 'Preview',
     extractStepTitle: 'Content Extraction',
     extractStepDesc: 'Run AI extraction on uploaded files',
@@ -281,6 +288,7 @@ const zh: {
     generating: '\u751F\u6210\u4E2D...',
     skip: '\u8DF3\u8FC7\uFF08\u81EA\u52A8\u68C0\u6D4B\u5217\uFF09',
     confirmUse: '\u4F7F\u7528\u6A21\u677F',
+    confirmDisabledHint: '\u8BF7\u5148\u751F\u6210\u6216\u6DFB\u52A0\u6A21\u677F\u5217',
     key: '\u5B57\u6BB5\u540D',
     type: '\u7C7B\u578B',
     desc: '\u63CF\u8FF0',
@@ -414,10 +422,16 @@ const zh: {
     configureTemplateDesc: '\u57FA\u4E8E\u63D0\u53D6\u7ED3\u679C\u914D\u7F6E\u8F93\u51FA\u5217\u6A21\u677F\uFF0C\u6216\u8DF3\u8FC7\u7531\u7CFB\u7EDF\u81EA\u52A8\u68C0\u6D4B',
     extractionComplete: '\u63D0\u53D6\u5B8C\u6210',
     alignMergeInProgress: '\u5BF9\u9F50\u4E0E\u5408\u5E76\u4E2D...',
+    alignMergeReady: '\u5BF9\u9F50\u5408\u5E76',
+    alignMergeComplete: '\u5BF9\u9F50\u5408\u5E76\u5B8C\u6210',
+    alignMergeStopped: '\u5DF2\u505C\u6B62\uFF0C\u70B9\u51FB\u91CD\u8BD5',
+    alignMergeHint: '\u70B9\u51FB\u5F00\u59CB\u5BF9\u9F50\u5408\u5E76\u63D0\u53D6\u6570\u636E',
+    startAlignMerge: '\u5F00\u59CB\u5BF9\u9F50\u5408\u5E76',
     retryFailed: '\u91CD\u8BD5\u5931\u8D25\u9879 ({{count}})',
     retrySelected: '\u91CD\u8BD5\u9009\u4E2D\u9879 ({{count}})',
     selectAll: '\u5168\u9009',
     deselectAll: '\u53D6\u6D88\u5168\u9009',
+    multiValueNote: '\u591A\u4E2A\u503C\u7528"; "\u62FC\u63A5',
     preview: '\u9884\u89C8',
     extractStepTitle: '\u5185\u5BB9\u63D0\u53D6',
     extractStepDesc: '\u5BF9\u4E0A\u4F20\u6587\u4EF6\u8FD0\u884C AI \u63D0\u53D6',
@@ -475,7 +489,7 @@ const zh: {
 // ---------------------------------------------------------------------------
 
 export function detectLocale(): Locale {
-  if (typeof window === 'undefined') return 'en';
+  if (typeof window === 'undefined') return 'zh';
   const lang = navigator.language?.toLowerCase() ?? '';
   return lang.startsWith('zh') ? 'zh' : 'en';
 }

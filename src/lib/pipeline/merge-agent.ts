@@ -217,7 +217,7 @@ export async function mergeGroupWithAI(
       { role: 'user', content: userMessage },
     ]) as any,
     {
-      signal: AbortSignal.any([abortSignal, AbortSignal.timeout(300_000)]),
+      signal: AbortSignal.any([abortSignal, AbortSignal.timeout(600_000)]),
     },
   );
 
@@ -318,7 +318,7 @@ export async function alignToTemplateWithAI(
     const completion = await openai.chat.completions.create(
       buildRequestOptions(model, messages) as any,
       {
-        signal: AbortSignal.any([abortSignal, AbortSignal.timeout(300_000)]),
+        signal: AbortSignal.any([abortSignal, AbortSignal.timeout(600_000)]),
       },
     );
 

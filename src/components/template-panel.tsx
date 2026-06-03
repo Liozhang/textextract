@@ -16,6 +16,11 @@ import {
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
   Sparkles,
   Plus,
   Trash2,
@@ -610,10 +615,19 @@ export default function TemplatePanel({
               <SkipForward className="h-4 w-4 mr-1" />
               {t('template.skip')}
             </Button>
-            <Button size="sm" onClick={handleConfirm} disabled={templateColumns.length === 0}>
-              <Check className="h-4 w-4 mr-1" />
-              {t('template.confirmUse')}
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="sm" onClick={handleConfirm} disabled={templateColumns.length === 0}>
+                  <Check className="h-4 w-4 mr-1" />
+                  {t('template.confirmUse')}
+                </Button>
+              </TooltipTrigger>
+              {templateColumns.length === 0 && (
+                <TooltipContent>
+                  <p>{t('template.confirmDisabledHint')}</p>
+                </TooltipContent>
+              )}
+            </Tooltip>
           </>
         ) : (
           <Button variant="ghost" size="sm" onClick={resetTemplate}>
