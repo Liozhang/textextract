@@ -1,10 +1,10 @@
 import { NextRequest } from 'next/server'
 import { writeFile, mkdir } from 'fs/promises'
 import { join } from 'path'
-import { tmpdir } from 'os'
 import { existsSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { cleanupExpiredSessions } from '@/lib/server-cleanup'
+import { getTempDir } from '@/lib/temp-dir'
 
 export const maxDuration = 60
 
@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
     }
 
     const sessionId = randomUUID()
-    const sessionDir = join(tmpdir(), 'ocr-extract', sessionId)
+    const sessionDir = join(getTempDir(), sessionId)
 
     // Create session directory
     await mkdir(sessionDir, { recursive: true })

@@ -1,8 +1,8 @@
 import { NextRequest } from 'next/server'
 import { rm } from 'fs/promises'
 import { join } from 'path'
-import { tmpdir } from 'os'
 import { existsSync, readdirSync } from 'fs'
+import { getTempDir } from '@/lib/temp-dir'
 
 /** Check if a session directory exists and list its files */
 export async function GET(
@@ -25,7 +25,7 @@ export async function GET(
       })
     }
 
-    const sessionDir = join(tmpdir(), 'ocr-extract', sessionId)
+    const sessionDir = join(getTempDir(), sessionId)
     if (!existsSync(sessionDir)) {
       return new Response(JSON.stringify({ exists: false, files: [] }), {
         status: 200,
@@ -69,7 +69,7 @@ export async function DELETE(
       })
     }
 
-    const sessionDir = join(tmpdir(), 'ocr-extract', sessionId)
+    const sessionDir = join(getTempDir(), sessionId)
 
     if (!existsSync(sessionDir)) {
       return new Response(JSON.stringify({ ok: true }), {

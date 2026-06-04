@@ -4,9 +4,9 @@
 
 import { readdir, rm, readFile } from 'fs/promises'
 import { join } from 'path'
-import { tmpdir } from 'os'
+import { getTempDir } from '@/lib/temp-dir'
 
-const SESSION_DIR = join(tmpdir(), 'ocr-extract')
+const SESSION_DIR = getTempDir()
 const DEFAULT_MAX_AGE = 24 * 60 * 60 * 1000 // 24 hours
 
 interface SessionMeta {

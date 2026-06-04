@@ -4,7 +4,7 @@ import mammoth from 'mammoth'
 import sharp from 'sharp'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
-import { tmpdir } from 'os'
+import { getTempDir } from '@/lib/temp-dir'
 
 import { parseJsonResponse } from '@/lib/pipeline/json-parser'
 import { isPrivateHost, sseEvent, workerPool, resolveApiSettings } from '@/lib/api-utils'
@@ -77,7 +77,7 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
   const getBase64 = () => {
     if (file.sessionId) {
       // Server temp storage path
-      const filePath = join(tmpdir(), 'ocr-extract', file.sessionId, file.id)
+      const filePath = join(getTempDir(), file.sessionId, file.id)
       if (existsSync(filePath)) {
         return readFileSync(filePath).toString('base64')
       }
@@ -160,7 +160,7 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
     default: {
       // For text-based files, try server temp file first, then fallback to content
       if (file.sessionId) {
-        const filePath = join(tmpdir(), 'ocr-extract', file.sessionId, file.id)
+        const filePath = join(getTempDir(), file.sessionId, file.id)
         if (existsSync(filePath)) {
           const text = readFileSync(filePath, 'utf-8')
           return { text }
