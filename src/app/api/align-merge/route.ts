@@ -167,8 +167,15 @@ export async function POST(request: NextRequest) {
     // Determine output headers: template columns > all unique keys
     const allKeys = new Set<string>()
     for (const r of extractionData) {
-      if (r.success && r.data) {
-        for (const k of Object.keys(r.data)) allKeys.add(k)
+      if (r.success) {
+        if (r.data) {
+          for (const k of Object.keys(r.data)) allKeys.add(k)
+        }
+        if (r.entries) {
+          for (const entry of r.entries) {
+            for (const k of Object.keys(entry)) allKeys.add(k)
+          }
+        }
       }
     }
     const outputHeaders = (templateColumns && templateColumns.length > 0)
@@ -193,6 +200,84 @@ export async function POST(request: NextRequest) {
         }
 
         try {
+          // ── Fast path: schema-guided extraction → simple row assembly ──
+          const hasSchemaEntries = extractionData.some(
+            (r) => r.success && r.entries && r.entries.length > 0,
+          )
+          if (hasSchemaEntries && templateColumns && templateColumns.length > 0) {
+            send('phase', { phase: 'merging' })
+            send('schema_ready', {
+              headers: templateColumns.map((c) => c.key),
+              totalRows: extractionData.filter((r) => r.success).length,
+            })
+
+            const rows: Array<{
+              id: string
+              label: string
+              data: Record<string, unknown>
+              imageDataUrl?: string
+              sourceFiles: string[]
+              isMerged: boolean
+              fieldConsistency: Record<string, boolean>
+              mergeMethod: string
+            }> = []
+
+            for (const group of groups) {
+              const groupResults = extractionData.filter((r) => r.groupId === group.groupId)
+              const groupEntries: Array<{ entry: Record<string, unknown>; source: string; imageDataUrl?: string }> = []
+
+              for (const r of groupResults) {
+                if (r.success && r.entries) {
+                  for (const entry of r.entries) {
+                    groupEntries.push({ entry, source: r.fileName, imageDataUrl: r.imageDataUrl })
+                  }
+                }
+              }
+
+              send('merge_start', {
+                groupId: group.groupId,
+                label: group.groupKey,
+                fileCount: groupResults.length,
+                successCount: groupResults.filter((r) => r.success).length,
+              })
+
+              for (let i = 0; i < groupEntries.length; i++) {
+                const { entry, source } = groupEntries[i]
+                rows.push({
+                  id: groupEntries.length > 1 ? `${group.groupId}-${i}` : group.groupId,
+                  label: groupEntries.length > 1 ? `${group.groupKey} #${i + 1}` : group.groupKey,
+                  data: entry,
+                  imageDataUrl: groupEntries[i].imageDataUrl,
+                  sourceFiles: [source],
+                  isMerged: groupEntries.length > 1,
+                  fieldConsistency: {},
+                  mergeMethod: 'schema_guided',
+                })
+              }
+
+              send('group_merged', {
+                groupId: group.groupId,
+                groupKey: group.groupKey,
+                sourceFileNames: groupResults.map((r) => r.fileName),
+                mergedCount: groupEntries.length,
+                mergeMethod: 'schema_guided',
+                conflicts: [],
+              })
+            }
+
+            send('all_done', {
+              totalFiles: extractionData.length,
+              totalGroups: allGroups.length,
+              mergedGroups: groups.length,
+              rows,
+              ...(isRetry ? { isRetry: true } : {}),
+            })
+
+            controller.close()
+            return
+          }
+
+          // ── Legacy path: AI merge + optional template alignment ──
           // ── Phase 1: Merge per group (no template columns) ────────────────
           send('phase', { phase: 'merging' })
           send('schema_ready', { headers: outputHeaders, totalRows: extractionData.filter((r) => r.success).length })

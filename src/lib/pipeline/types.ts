@@ -24,7 +24,10 @@ export interface PerFileResult {
   fileName: string;
   groupId: string;
   success: boolean;
+  /** Flat object (legacy mode) */
   data?: Record<string, unknown>;
+  /** Schema-guided multi-row output */
+  entries?: Array<Record<string, unknown>>;
   imageDataUrl?: string;
   error?: string;
 }

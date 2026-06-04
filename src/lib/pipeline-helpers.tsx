@@ -141,8 +141,6 @@ const PHASE_META: Record<string, { icon: typeof FolderTree; labelKey: string }> 
   extracting: { icon: Layers, labelKey: 'pipeline.phaseExtracting' },
   aligning: { icon: AlignJustify, labelKey: 'pipeline.phaseAligning' },
   merging: { icon: Merge, labelKey: 'pipeline.phaseMerging' },
-  collecting: { icon: FolderTree, labelKey: 'mergeKeys.phaseCollecting' },
-  applying: { icon: Layers, labelKey: 'mergeKeys.phaseApplying' },
 };
 
 export function PhaseIndicator({ phases }: { phases: PipelinePhase[] }) {

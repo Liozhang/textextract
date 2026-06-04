@@ -1,9 +1,8 @@
 'use client';
 
-import { Sparkles, LayoutTemplate } from 'lucide-react';
+import { LayoutTemplate } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
-import { useExtractionSummary } from '@/lib/hooks/use-extraction-summary';
 import TemplatePanel from '@/components/template-panel';
 import {
   Card,
@@ -12,29 +11,22 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 
 export default function TemplateStepPanel() {
   const t = useT();
-  const progress = useStore((s) => s.progress);
-  const extractionSnapshot = useStore((s) => s.extractionSnapshot);
-  const keyAlignmentResult = useStore((s) => s.keyAlignmentResult);
   const setProgress = useStore((s) => s.setProgress);
   const resetTemplate = useStore((s) => s.resetTemplate);
   const setStep = useStore((s) => s.setStep);
 
-  const { extractedFields } = useExtractionSummary();
-  const isExtractionDone = progress.status === 'extraction_done' || progress.status === 'keys_aligned';
-
   const handleConfirm = () => {
-    setProgress({ status: 'template_done' });
-    setStep('align_merge');
+    setProgress({ status: 'template_configured' });
+    setStep('extract');
   };
 
   const handleSkip = () => {
     resetTemplate();
-    setProgress({ status: 'template_done' });
-    setStep('align_merge');
+    setProgress({ status: 'template_configured' });
+    setStep('extract');
   };
 
   return (
@@ -47,45 +39,12 @@ export default function TemplateStepPanel() {
         <CardDescription>{t('review.templateStepDesc')}</CardDescription>
       </CardHeader>
 
-      <CardContent className="flex flex-col gap-4">
-        {!isExtractionDone && (
-          <p className="text-muted-foreground text-sm">
-            {t('review.hintNoFiles')}
-          </p>
-        )}
-
-        {/* Extracted fields badges */}
-        {isExtractionDone && extractedFields.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {extractedFields.map((field) => (
-              <Badge key={field} variant="outline" className="text-xs">
-                {field}
-              </Badge>
-            ))}
-          </div>
-        )}
-
-        {/* Template configuration */}
-        {isExtractionDone && (
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Sparkles className="size-4" />
-                {t('review.configureTemplateTitle')}
-              </CardTitle>
-              <CardDescription>{t('review.configureTemplateDesc')}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <TemplatePanel
-                embedded
-                extractionData={extractionSnapshot?.results}
-                prefilledKeys={keyAlignmentResult?.fieldOrder}
-                onConfirm={handleConfirm}
-                onSkip={handleSkip}
-              />
-            </CardContent>
-          </Card>
-        )}
+      <CardContent>
+        <TemplatePanel
+          embedded
+          onConfirm={handleConfirm}
+          onSkip={handleSkip}
+        />
       </CardContent>
     </Card>
   );

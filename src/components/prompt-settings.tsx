@@ -34,7 +34,6 @@ import { Label } from '@/components/ui/label';
 
 const PHASES: Array<{ key: keyof PromptSettings; defaultKey: keyof typeof DEFAULT_PROMPTS }> = [
   { key: 'extraction', defaultKey: 'extraction' },
-  { key: 'keyAlign', defaultKey: 'keyAlign' },
   { key: 'merge', defaultKey: 'merge' },
   { key: 'templateAlign', defaultKey: 'templateAlign' },
   { key: 'templateGenerate', defaultKey: 'templateGenerate' },
@@ -157,7 +156,12 @@ export default function PromptSettings() {
               >
                 <CollapsibleTrigger asChild>
                   <button className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm font-medium hover:bg-accent transition-colors">
-                    {t(`settings.${key}`)}
+                    <div className="flex flex-col items-start gap-0.5">
+                      {t(`settings.${key}`)}
+                      {key === 'extraction' && (
+                        <span className="text-xs font-normal text-muted-foreground">{t('settings.extractionHint')}</span>
+                      )}
+                    </div>
                     <ChevronDown
                       className={`size-4 transition-transform ${expanded.has(key) ? 'rotate-180' : ''}`}
                     />
@@ -206,7 +210,7 @@ export default function PromptSettings() {
             <AlertDialogAction
               onClick={() => {
                 resetPromptSettings();
-                setLocalValues({ extraction: '', keyAlign: '', merge: '', templateAlign: '', templateGenerate: '' });
+                setLocalValues({ extraction: '', merge: '', templateAlign: '', templateGenerate: '' });
                 setShowResetConfirm(false);
               }}
             >

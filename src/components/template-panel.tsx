@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useStore, type ColumnConstraint } from '@/lib/store';
 import { useT } from '@/lib/i18n';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PRESET_TEMPLATES } from '@/lib/preset-templates';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -20,6 +21,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import { Separator } from '@/components/ui/separator';
 import {
   Sparkles,
   Plus,
@@ -30,6 +32,7 @@ import {
   Download,
   Keyboard,
   CheckCircle2,
+  LayoutGrid,
 } from 'lucide-react';
 
 interface TemplatePanelProps {
@@ -104,6 +107,17 @@ export default function TemplatePanel({
   const [error, setError] = useState('');
   const [newKeyName, setNewKeyName] = useState('');
   const [selectedImportKeys, setSelectedImportKeys] = useState<Set<string>>(new Set());
+
+  // Auto-load clinical-report preset when no columns are configured yet
+  useEffect(() => {
+    if (templateColumns.length === 0 && !embedded) {
+      const clinicalReport = PRESET_TEMPLATES.find((p) => p.id === 'clinical-report');
+      if (clinicalReport) {
+        setTemplateColumns(clinicalReport.columns);
+        setTemplateGenerated(true);
+      }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // All unique fields from extraction data (for import-all)
   const allExtractedFields = useMemo(() => {
@@ -333,130 +347,135 @@ export default function TemplatePanel({
 
   return (
     <div className="space-y-4">
-      {/* AI / Paste generation section */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5" />
-            {t('template.title')}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            {embedded ? t('template.embeddedDescription') : t('template.description')}
-          </p>
-
-          {/* Prompt input */}
-          <div className="flex gap-3">
-            <Textarea
-              className="min-h-[80px] flex-1"
-              placeholder={t('template.promptPlaceholder')}
-              value={templatePrompt}
-              onChange={(e) => setTemplatePrompt(e.target.value)}
-            />
+      {/* ── Preset template selector ── */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <LayoutGrid className="size-4" />
+          {t('template.presetSection')}
+        </div>
+        <p className="text-xs text-muted-foreground">{t('template.presetDesc')}</p>
+        <div className="flex flex-wrap gap-2">
+          {PRESET_TEMPLATES.map((preset) => (
             <Button
-              onClick={handleGenerate}
-              disabled={!templatePrompt.trim() || generating}
-              className="shrink-0"
-            >
-              {generating ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <>
-                  <Sparkles className="h-4 w-4 mr-1" />
-                  {t('template.generate')}
-                </>
-              )}
-            </Button>
-          </div>
-
-          {error && (
-            <p className="text-sm text-destructive">{error}</p>
-          )}
-          {generating && (
-            <p className="text-sm text-muted-foreground">
-              {t('template.generating')}
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Manual key input section */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Keyboard className="size-4" />
-            {t('template.manualSection')}
-          </CardTitle>
-          <p className="text-sm text-muted-foreground">
-            {t('template.manualDesc')}
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {/* Single key input */}
-          <div className="flex gap-2">
-            <Input
-              className="h-8 flex-1"
-              placeholder={t('template.addKeyPlaceholder')}
-              value={newKeyName}
-              onChange={(e) => setNewKeyName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleAddKey();
-                }
+              key={preset.id}
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setTemplateColumns(preset.columns.map((c) => ({ ...c })));
+                setTemplateGenerated(true);
               }}
-            />
-            <Button variant="outline" size="sm" onClick={handleAddKey} disabled={!newKeyName.trim()}>
-              <Plus className="h-3.5 w-3.5 mr-1" />
-              {t('template.addKeyButton')}
+            >
+              {preset.name}
             </Button>
-          </div>
+          ))}
+        </div>
+      </div>
 
-          {/* Selectable field badges */}
-          {availableKeys.length > 0 && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">{t('template.selectFieldsDesc')}</span>
-                <div className="flex gap-2">
-                  <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={handleSelectAll}>
-                    {t('template.selectAll')}
-                  </Button>
-                  <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={handleDeselectAll}>
-                    {t('template.deselectAll')}
-                  </Button>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {availableKeys.map((key) => {
-                  const alreadyInTemplate = templateColumns.some((c) => c.key === key);
-                  const isSelected = selectedImportKeys.has(key);
-                  return (
-                    <Badge
-                      key={key}
-                      variant={isSelected ? 'default' : 'outline'}
-                      className={`cursor-pointer select-none text-xs transition-colors ${
-                        alreadyInTemplate ? 'opacity-40 pointer-events-none' : ''
-                      }`}
-                      onClick={() => !alreadyInTemplate && toggleKey(key)}
-                    >
-                      {isSelected && <CheckCircle2 className="size-3 mr-1" />}
-                      {key}
-                      {alreadyInTemplate && ' ✓'}
-                    </Badge>
-                  );
-                })}
-              </div>
-              {selectedImportKeys.size > 0 && (
-                <Button size="sm" onClick={handleImportSelected}>
-                  <Download className="h-3.5 w-3.5 mr-1" />
-                  {t('template.importSelected', { count: selectedImportKeys.size })}
+      <Separator />
+
+      {/* ── AI / Paste generation ── */}
+      <div className="space-y-2">
+        <div className="text-sm font-semibold">{t('template.title')}</div>
+        <p className="text-xs text-muted-foreground">
+          {embedded ? t('template.embeddedDescription') : t('template.description')}
+        </p>
+        <div className="flex gap-3">
+          <Textarea
+            className="min-h-[80px] flex-1"
+            placeholder={t('template.promptPlaceholder')}
+            value={templatePrompt}
+            onChange={(e) => setTemplatePrompt(e.target.value)}
+          />
+          <Button
+            onClick={handleGenerate}
+            disabled={!templatePrompt.trim() || generating}
+            className="shrink-0"
+          >
+            {generating ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <>
+                <Sparkles className="h-4 w-4 mr-1" />
+                {t('template.generate')}
+              </>
+            )}
+          </Button>
+        </div>
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        {generating && <p className="text-sm text-muted-foreground">{t('template.generating')}</p>}
+      </div>
+
+      <Separator />
+
+      {/* ── Manual key input ── */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <Keyboard className="size-4" />
+          {t('template.manualSection')}
+        </div>
+        <p className="text-xs text-muted-foreground">{t('template.manualDesc')}</p>
+        <div className="flex gap-2">
+          <Input
+            className="h-8 flex-1"
+            placeholder={t('template.addKeyPlaceholder')}
+            value={newKeyName}
+            onChange={(e) => setNewKeyName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleAddKey();
+              }
+            }}
+          />
+          <Button variant="outline" size="sm" onClick={handleAddKey} disabled={!newKeyName.trim()}>
+            <Plus className="h-3.5 w-3.5 mr-1" />
+            {t('template.addKeyButton')}
+          </Button>
+        </div>
+
+        {/* Selectable field badges */}
+        {availableKeys.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">{t('template.selectFieldsDesc')}</span>
+              <div className="flex gap-2">
+                <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={handleSelectAll}>
+                  {t('template.selectAll')}
                 </Button>
-              )}
+                <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={handleDeselectAll}>
+                  {t('template.deselectAll')}
+                </Button>
+              </div>
             </div>
-          )}
-        </CardContent>
-      </Card>
+            <div className="flex flex-wrap gap-1.5">
+              {availableKeys.map((key) => {
+                const alreadyInTemplate = templateColumns.some((c) => c.key === key);
+                const isSelected = selectedImportKeys.has(key);
+                return (
+                  <Badge
+                    key={key}
+                    variant={isSelected ? 'default' : 'outline'}
+                    className={`cursor-pointer select-none text-xs transition-colors ${
+                      alreadyInTemplate ? 'opacity-40 pointer-events-none' : ''
+                    }`}
+                    onClick={() => !alreadyInTemplate && toggleKey(key)}
+                  >
+                    {isSelected && <CheckCircle2 className="size-3 mr-1" />}
+                    {key}
+                    {alreadyInTemplate && ' ✓'}
+                  </Badge>
+                );
+              })}
+            </div>
+            {selectedImportKeys.size > 0 && (
+              <Button size="sm" onClick={handleImportSelected}>
+                <Download className="h-3.5 w-3.5 mr-1" />
+                {t('template.importSelected', { count: selectedImportKeys.size })}
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Empty state */}
       {templateColumns.length === 0 && (
@@ -489,6 +508,9 @@ export default function TemplatePanel({
                     <th className="pb-2 pr-2 w-[100px]">{t('template.type')}</th>
                     <th className="pb-2 pr-2 min-w-[200px]">{t('template.desc')}</th>
                     <th className="pb-2 pr-2 min-w-[120px]">{t('template.example')}</th>
+                    <th className="pb-2 pr-2 w-[60px]" title={t('template.repeatingHint')}>
+                      {t('template.repeating')}
+                    </th>
                     {/* Value preview column: only in embedded mode with data */}
                     {embedded && extractionData && extractionData.length > 0 && (
                       <th className="pb-2 pr-2 min-w-[200px]">
@@ -547,6 +569,17 @@ export default function TemplatePanel({
                               updateColumn(idx, { example: e.target.value })
                             }
                             className="h-8"
+                          />
+                        </td>
+                        <td className="py-1.5 pr-2 text-center">
+                          <input
+                            type="checkbox"
+                            checked={col.repeating || false}
+                            onChange={(e) =>
+                              updateColumn(idx, { repeating: e.target.checked })
+                            }
+                            className="size-3.5 rounded"
+                            title={t('template.repeatingHint')}
                           />
                         </td>
                         {/* Value preview cells */}

@@ -35,7 +35,6 @@ export const metadata: Metadata = {
       "Extract structured data from any document using AI. Supports PDF, Word, Excel, images. Export to Excel/CSV/JSON.",
     type: "website",
     locale: "zh_CN",
-    alternateLocale: "en_US",
   },
 };
 

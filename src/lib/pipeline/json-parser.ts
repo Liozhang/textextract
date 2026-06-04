@@ -90,7 +90,7 @@ export function parseJsonResponse(text: string): unknown {
   while ((kvMatch5 = kvRegex5.exec(trimmed)) !== null) {
     kvResult[kvMatch5[1].trim()] = kvMatch5[2].trim();
   }
-  if (Object.keys(kvResult).length > 0) {
+  if (Object.keys(kvResult).length >= 2) {
     return kvResult;
   }
 

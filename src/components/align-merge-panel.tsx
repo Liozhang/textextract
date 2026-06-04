@@ -76,6 +76,7 @@ export default function AlignMergePanel() {
   const [pipelineRows, setPipelineRows] = useState<PipelineRow[]>([]);
   const [schemaHeaders, setSchemaHeaders] = useState<string[]>([]);
   const [schemaAlignFallback, setSchemaAlignFallback] = useState(false);
+  const hasTemplateColumns = useStore((s) => s.templateColumns.length > 0);
   const [phases, setPhases] = useState<PipelinePhase[]>(() => {
     if (progress.status === 'done') return [...ALL_DONE_PHASES];
     const base: PipelinePhase[] = [
@@ -93,7 +94,6 @@ export default function AlignMergePanel() {
   const isDone = progress.status === 'done';
   const isError = progress.status === 'error';
   const isStopped = progress.status === 'extraction_done' && pipelineRows.length === 0;
-  const hasTemplateColumns = useStore((s) => s.templateColumns.length > 0);
 
   const mergedHeaders = useMemo(() => {
     if (schemaHeaders.length > 0) return schemaHeaders;
@@ -183,6 +183,7 @@ export default function AlignMergePanel() {
         groupId: r.groupId,
         success: r.success,
         data: r.data,
+        entries: r.entries,
         error: r.error,
       })),
       groups: snapshot.groups.map((g) => ({ groupId: g.groupId, groupKey: g.groupKey })),
@@ -388,10 +389,10 @@ export default function AlignMergePanel() {
     }
   }, [t, addResult, setMergedExportData, setProgress]);
 
-  // Auto-start when component mounts with template_done status
+  // Auto-start when component mounts with extraction_done + template columns
   const hasStarted = useRef(false);
   useEffect(() => {
-    if (progress.status === 'template_done' && !hasStarted.current) {
+    if (progress.status === 'extraction_done' && !hasStarted.current && useStore.getState().templateColumns.length > 0) {
       hasStarted.current = true;
       handleAlignMerge();
     }
@@ -414,6 +415,7 @@ export default function AlignMergePanel() {
         groupId: r.groupId,
         success: r.success,
         data: r.data,
+        entries: r.entries,
         error: r.error,
       })),
       groups: snapshot.groups.map((g) => ({ groupId: g.groupId, groupKey: g.groupKey })),
