@@ -73,7 +73,15 @@ export default function AlignMergePanel() {
   const [showDetails, setShowDetails] = useState(false);
   const [retryingGroupId, setRetryingGroupId] = useState<string | null>(null);
 
-  const [pipelineRows, setPipelineRows] = useState<PipelineRow[]>([]);
+  const [pipelineRows, setPipelineRowsState] = useState<PipelineRow[]>([]);
+  const pipelineRowsRef = useRef<PipelineRow[]>([]);
+  const setPipelineRows = useCallback((rows: PipelineRow[] | ((prev: PipelineRow[]) => PipelineRow[])) => {
+    setPipelineRowsState((prev) => {
+      const next = typeof rows === 'function' ? rows(prev) : rows;
+      pipelineRowsRef.current = next;
+      return next;
+    });
+  }, []);
   const [schemaHeaders, setSchemaHeaders] = useState<string[]>([]);
   const [schemaAlignFallback, setSchemaAlignFallback] = useState(false);
   const hasTemplateColumns = useStore((s) => s.templateColumns.length > 0);
@@ -352,10 +360,21 @@ export default function AlignMergePanel() {
         }
       });
 
-      // Stream ended without explicit all_done
+      // Stream ended without explicit all_done — sync pipelineRows to mergedExportData
       if (useStore.getState().progress.status === 'aligning_merging') {
         setPhases((prev) => prev.map((p) => ({ ...p, status: 'done' })));
         setProgress({ status: 'done' });
+        const currentRows = pipelineRowsRef.current;
+        if (currentRows.length > 0) {
+          setMergedExportData(
+            currentRows.map((row) => ({
+              label: row.label,
+              data: row.data,
+              sourceFiles: row.sourceFiles,
+              success: true,
+            })),
+          );
+        }
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {

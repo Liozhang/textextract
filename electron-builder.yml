@@ -28,7 +28,5 @@ extraResources:
     to: standalone
   - from: .next/static
     to: standalone/.next/static
-  - from: public
-    to: standalone/public
 
 asar: false

@@ -8,7 +8,7 @@
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
     "electron:dev": "concurrently --names \"next,electron\" \"next dev -p 3000\" \"wait-on http://localhost:3000 && tsx electron/main.ts\"",
-    "electron:build": "npm run build && tsc -p electron/tsconfig.json && electron-builder --win",
+    "electron:build": "npm run build && cp .next/static .next/standalone/.next/ && tsc -p electron/tsconfig.json && echo \"require('./server.js');\" > .next/standalone/index.js && electron-builder --win",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
