@@ -105,6 +105,19 @@ export async function consumeSSEStream(
       }
     }
   }
+
+  // Process any remaining data in buffer after stream ends
+  if (buffer.trim()) {
+    const events = parseSSEChunks(buffer + '\n\n');
+    for (const evt of events) {
+      try {
+        const parsed = JSON.parse(evt.data);
+        onEvent(evt.event, parsed);
+      } catch {
+        // ignore JSON parse errors
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

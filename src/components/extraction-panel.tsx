@@ -322,6 +322,7 @@ export default function ExtractionPanel() {
         const { files: batchFiles } = batches[batchIdx];
         const isFirstBatch = batchIdx === 0;
 
+        try {
         const body = {
           files: batchFiles.map((f) => ({
             id: f.id,
@@ -354,7 +355,14 @@ export default function ExtractionPanel() {
         });
 
         if (!response.ok) {
-          throw new Error(t('review.serverError', { code: response.status, text: response.statusText }));
+          // Mark all files in this batch as failed, continue to next batch
+          const errorMsg = t('review.serverError', { code: response.status, text: response.statusText });
+          for (const f of batchFiles) {
+            addResult({ fileId: f.id, fileName: f.name, success: false, error: errorMsg });
+          }
+          setProgress({ completedFiles: accumulatedResults.length + batchFiles.length });
+          toast.error(t('review.batchFailed', { batch: batchIdx + 1 }));
+          continue;
         }
 
         let batchCompleted = 0;
@@ -514,20 +522,16 @@ export default function ExtractionPanel() {
             }
 
             case 'error': {
-              setPhases((prev) =>
-                prev.map((p) => {
-                  if (p.status === 'active') return { ...p, status: 'pending', detail: '' };
-                  return p;
-                }),
-              );
-              setProgress({ status: 'error' });
-              addResult({
-                fileId: 'system',
-                fileName: t('review.systemError'),
-                success: false,
-                error: parsed.message ?? t('review.unknownError'),
-              });
-              setHasExtracted(true);
+              // Server-level error for this batch — mark remaining files as failed, continue
+              const errorMsg = parsed.message ?? t('review.unknownError');
+              const completedFileIds = new Set(accumulatedResults.map((r) => r.fileId));
+              for (const f of batchFiles) {
+                if (!completedFileIds.has(f.id)) {
+                  addResult({ fileId: f.id, fileName: f.name, success: false, error: errorMsg });
+                }
+              }
+              setProgress({ completedFiles: prevCompleted + batchFiles.length });
+              toast.error(errorMsg);
               return;
             }
           }
@@ -575,6 +579,18 @@ export default function ExtractionPanel() {
         }).catch(() => {});
         // Also persist to localStorage as a fallback (survives page unload)
         persistToLocalStorage();
+        } catch (batchErr: unknown) {
+          // Network error or unexpected failure for this batch — skip and continue
+          if (controller.signal.aborted) break;
+          const errorMsg = batchErr instanceof Error ? batchErr.message : t('review.unknownError');
+          const completedFileIds = new Set(accumulatedResults.map((r) => r.fileId));
+          for (const f of batchFiles) {
+            if (!completedFileIds.has(f.id)) {
+              addResult({ fileId: f.id, fileName: f.name, success: false, error: errorMsg });
+            }
+          }
+          toast.error(t('review.batchFailed', { batch: batchIdx + 1, error: errorMsg }));
+        }
       }
 
       // All batches complete — build final snapshot
