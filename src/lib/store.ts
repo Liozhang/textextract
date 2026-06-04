@@ -44,6 +44,7 @@ export interface ExtractionResultItem {
   fileName: string;
   success: boolean;
   data?: Record<string, unknown>;
+  entries?: Array<Record<string, unknown>>;
   error?: string;
 }
 

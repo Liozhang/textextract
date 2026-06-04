@@ -13,6 +13,7 @@ import {
   Eye,
   X,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import { useExtractionSummary } from '@/lib/hooks/use-extraction-summary';
@@ -151,20 +152,71 @@ export default function ExtractionPanel() {
     // Generate session ID for IndexedDB persistence
     const sessionId = isResume ? crypto.randomUUID() : crypto.randomUUID();
 
-    // Clean up any previous server temp files before starting new (non-resume) extraction
-    if (!isResume) {
-      const prevSessionIds = [...new Set(files.map((f) => f.sessionId).filter(Boolean))] as string[];
-      prevSessionIds.forEach((sid) => {
-        fetch(`/api/upload/${sid}`, { method: 'DELETE' }).catch(() => {});
-      });
-    }
+    // Note: server temp files are NOT cleaned up here.
+    // They are needed during extraction (API reads files from server temp storage).
+    // Cleanup happens only after extraction completes successfully (see below).
 
     // Determine which files still need extraction
-    const existingResults = isResume ? snapshot!.results : [];
+    let existingResults: typeof snapshot extends null ? never[] : NonNullable<typeof snapshot>['results'] = isResume ? [...snapshot!.results] : [];
     const completedFileIds = new Set(existingResults.filter((r) => r.success).map((r) => r.fileId));
-    const filesToExtract = isResume
+
+    let filesToExtract = isResume
       ? files.filter((f) => !completedFileIds.has(f.id))
       : files;
+
+    // Resume: check which server sessions still have files available
+    if (isResume && filesToExtract.length > 0) {
+      const sessionIdsToCheck = [...new Set(filesToExtract.map((f) => f.sessionId).filter(Boolean))] as string[];
+      const serverFilesBySession = new Map<string, Set<string>>();
+      await Promise.all(sessionIdsToCheck.map(async (sid) => {
+        try {
+          const res = await fetch(`/api/upload/${sid}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.exists) {
+              serverFilesBySession.set(sid, new Set(data.files as string[]));
+            }
+          }
+        } catch { /* ignore network errors */ }
+      }));
+
+      // Filter out files whose server temp file no longer exists
+      const availableFiles = filesToExtract.filter((f) => {
+        if (!f.sessionId) return true; // no sessionId means inline data
+        const serverFiles = serverFilesBySession.get(f.sessionId);
+        if (!serverFiles) return false; // session dir doesn't exist
+        return serverFiles.has(f.id);
+      });
+
+      const missingCount = filesToExtract.length - availableFiles.length;
+      if (missingCount > 0) {
+        toast.warning(
+          `${missingCount} 个文件的临时数据已过期，将保留已有提取结果。如需重新提取，请重新上传这些文件。`,
+          { duration: 8000 },
+        );
+      }
+
+      // For missing files, add them as failed results so they appear in the final snapshot
+      if (missingCount > 0) {
+        const missingFiles = filesToExtract.filter((f) => {
+          if (!f.sessionId) return false;
+          const serverFiles = serverFilesBySession.get(f.sessionId);
+          if (!serverFiles) return true;
+          return !serverFiles.has(f.id);
+        });
+        for (const f of missingFiles) {
+          existingResults.push({
+            fileId: f.id,
+            fileName: f.name,
+            groupId: '',
+            success: false,
+            error: '服务器临时文件已过期，请重新上传',
+          });
+        }
+      }
+
+      filesToExtract = availableFiles;
+    }
 
     if (filesToExtract.length === 0) {
       // All files already extracted
@@ -387,6 +439,7 @@ export default function ExtractionPanel() {
                 fileName: parsed.fileName ?? '',
                 success: parsed.success ?? false,
                 data: parsed.data,
+                entries: parsed.entries,
                 error: parsed.error,
               });
               if (parsed.success) {
@@ -397,9 +450,10 @@ export default function ExtractionPanel() {
                 sessionStateRef.current.results.push({
                   fileId: String(parsed.fileId ?? ''),
                   fileName: parsed.fileName ?? '',
-                  groupId: '',
+                  groupId: String(parsed.groupId ?? ''),
                   success: parsed.success ?? false,
                   data: parsed.data,
+                  entries: parsed.entries,
                   error: parsed.error,
                 });
               }
@@ -409,16 +463,41 @@ export default function ExtractionPanel() {
 
             case 'extraction_done': {
               const batchResults = parsed.results || [];
-              accumulatedResults.push(...batchResults.map((r: any) => ({
-                fileId: r.fileId ?? '',
-                fileName: r.fileName ?? '',
-                groupId: r.groupId ?? '',
-                success: r.success ?? false,
-                data: r.data,
-                entries: r.entries,
-                error: r.error,
-                imageDataUrl: r.imageDataUrl,
-              })));
+              // Merge batch results into accumulatedResults using fileId as key.
+              // When duplicates exist (resume scenario), prefer the entry with
+              // actual data (success=true with non-empty data/entries).
+              const resultMap = new Map<string, typeof accumulatedResults[0]>();
+              // Seed with existing results first (preserves good data from prior sessions)
+              for (const r of accumulatedResults) {
+                resultMap.set(r.fileId, r);
+              }
+              // Overlay with new batch results — only overwrite if new result is better
+              for (const r of batchResults) {
+                const entry = {
+                  fileId: r.fileId ?? '',
+                  fileName: r.fileName ?? '',
+                  groupId: r.groupId ?? '',
+                  success: r.success ?? false,
+                  data: r.data,
+                  entries: r.entries,
+                  error: r.error,
+                  imageDataUrl: r.imageDataUrl,
+                };
+                const existing = resultMap.get(entry.fileId);
+                if (!existing) {
+                  resultMap.set(entry.fileId, entry);
+                } else if (entry.success && !existing.success) {
+                  // New success beats existing failure
+                  resultMap.set(entry.fileId, entry);
+                } else if (entry.success && existing.success) {
+                  // Both success — prefer the one with more data
+                  const newCount = entry.data ? Object.keys(entry.data).length : (entry.entries?.length ?? 0);
+                  const oldCount = existing.data ? Object.keys(existing.data).length : (existing.entries?.length ?? 0);
+                  if (newCount > oldCount) resultMap.set(entry.fileId, entry);
+                }
+              }
+              accumulatedResults.length = 0;
+              accumulatedResults.push(...resultMap.values());
               if (!accumulatedGroups.length) {
                 accumulatedGroups = (parsed.groups || []).map((g: any) => ({
                   groupId: g.groupId ?? g.label ?? '',
@@ -529,19 +608,27 @@ export default function ExtractionPanel() {
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
-        if (accumulatedResults.length > 0) {
+        // Use sessionStateRef as fallback when accumulatedResults is empty
+        // (happens when aborting mid-SSE stream before extraction_done event)
+        const savedResults = accumulatedResults.length > 0
+          ? accumulatedResults
+          : sessionStateRef.current?.results ?? [];
+        if (savedResults.length > 0) {
+          const savedGroups = accumulatedGroups.length > 0
+            ? accumulatedGroups
+            : sessionStateRef.current?.groups ?? [];
           setExtractionSnapshot({
-            results: accumulatedResults,
-            groups: accumulatedGroups,
+            results: savedResults,
+            groups: savedGroups,
           });
           setProgress({ status: 'extraction_done', currentFile: '' });
           // Persist interrupted session to IndexedDB for resume
           saveSession({
             sessionId,
             status: 'extracting',
-            results: accumulatedResults,
-            groups: accumulatedGroups,
-            completedBatches: accumulatedResults.filter((r) => r.success).length,
+            results: savedResults,
+            groups: savedGroups,
+            completedBatches: savedResults.filter((r) => r.success).length,
             totalBatches: total,
             createdAt: Date.now(),
             files: useStore.getState().files.map((f) => ({
@@ -556,7 +643,7 @@ export default function ExtractionPanel() {
             templateColumns: useStore.getState().templateColumns.length > 0
               ? useStore.getState().templateColumns
               : null,
-            extractionSnapshot: { results: accumulatedResults, groups: accumulatedGroups },
+            extractionSnapshot: { results: savedResults, groups: savedGroups },
             batchTimings: [],
           }).catch(() => {});
         } else {
@@ -1053,7 +1140,7 @@ export default function ExtractionPanel() {
                         )}
                       </td>
                       <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">
-                        {r.success && r.data ? Object.keys(r.data).length : r.success && r.entries ? r.entries.length : '\u2014'}
+                        {r.success && r.data ? Object.keys(r.data).length : r.success && r.entries ? `${r.entries.length}×${r.entries[0] ? Object.keys(r.entries[0]).length : 0}` : '\u2014'}
                       </td>
                       <td className="px-2 py-1.5">
                         {(r.success && (r.data || r.entries)) || r.imageDataUrl ? (
