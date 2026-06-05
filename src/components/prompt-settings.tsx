@@ -46,6 +46,10 @@ export default function PromptSettings() {
   const resetPromptSettings = useStore((s) => s.resetPromptSettings);
   const apiSettings = useStore((s) => s.apiSettings);
   const setApiSettings = useStore((s) => s.setApiSettings);
+  const cacheSettings = useStore((s) => s.cacheSettings);
+  const setCacheExpiryHours = useStore((s) => s.setCacheExpiryHours);
+  const documentType = useStore((s) => s.documentType);
+  const setDocumentType = useStore((s) => s.setDocumentType);
 
   const [open, setOpen] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -145,6 +149,43 @@ export default function PromptSettings() {
                 placeholder="3"
               />
             </div>
+          </div>
+
+          {/* ── Document Type ────────────────────────────────────────── */}
+          <div className="space-y-3 mt-4">
+            <h4 className="text-sm font-semibold">{t('settings.documentType')}</h4>
+            <div className="flex flex-col gap-2">
+              <Input
+                value={documentType}
+                onChange={(e) => setDocumentType(e.target.value)}
+                placeholder={t('settings.documentTypePlaceholder')}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">{t('settings.documentTypeHint', { defaultValue: 'Helps AI understand document structure for better extraction' })}</p>
+          </div>
+
+          {/* ── Cache Settings ────────────────────────────────────────── */}
+          <div className="space-y-3 mt-4">
+            <h4 className="text-sm font-semibold">{t('settings.cacheSection')}</h4>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="cache-expiry" className="text-xs text-muted-foreground">
+                {t('settings.cacheExpiryHours')}
+              </Label>
+              <select
+                id="cache-expiry"
+                className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                value={cacheSettings.expiryHours}
+                onChange={(e) => setCacheExpiryHours(Number(e.target.value))}
+              >
+                <option value={6}>6 {t('settings.hours')}</option>
+                <option value={12}>12 {t('settings.hours')}</option>
+                <option value={24}>24 {t('settings.hours')}</option>
+                <option value={48}>48 {t('settings.hours')}</option>
+                <option value={72}>72 {t('settings.hours')}</option>
+                <option value={168}>7 {t('settings.days')}</option>
+              </select>
+            </div>
+            <p className="text-xs text-muted-foreground">{t('settings.cacheHint')}</p>
           </div>
 
           <div className="space-y-3 mt-4">

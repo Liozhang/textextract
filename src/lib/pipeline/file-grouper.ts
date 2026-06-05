@@ -31,10 +31,10 @@ export function groupFilesByPrefix<T extends { id: string; name: string }>(
   }
 
   const groups: FileGroup[] = [];
-  let idx = 0;
   for (const [groupKey, groupFiles] of groupMap) {
+    // Use groupKey (filename prefix) as groupId for stable identity across batches
     groups.push({
-      groupId: `group-${idx++}`,
+      groupId: groupKey,
       groupKey,
       files: groupFiles as unknown as FileGroup['files'],
     });

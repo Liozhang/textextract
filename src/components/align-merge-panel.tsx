@@ -72,6 +72,8 @@ export default function AlignMergePanel() {
   const intentionalAbortRef = useRef(false);
   const [showDetails, setShowDetails] = useState(false);
   const [retryingGroupId, setRetryingGroupId] = useState<string | null>(null);
+  const [retryPhase, setRetryPhase] = useState('');
+  const [retrySchemaHeaders, setRetrySchemaHeaders] = useState<string[]>([]);
 
   const [pipelineRows, setPipelineRowsState] = useState<PipelineRow[]>([]);
   const pipelineRowsRef = useRef<PipelineRow[]>([]);
@@ -85,6 +87,21 @@ export default function AlignMergePanel() {
   const [schemaHeaders, setSchemaHeaders] = useState<string[]>([]);
   const [schemaAlignFallback, setSchemaAlignFallback] = useState(false);
   const hasTemplateColumns = useStore((s) => s.templateColumns.length > 0);
+  const mergedExportData = useStore((s) => s.mergedExportData);
+
+  // Restore pipelineRows from mergedExportData when returning after align-merge completed
+  useEffect(() => {
+    if (isDone && pipelineRows.length === 0 && mergedExportData.length > 0) {
+      const restored: PipelineRow[] = mergedExportData.map((row, idx) => ({
+        id: `row-${idx}`,
+        label: row.label,
+        data: row.data,
+        sourceFiles: row.sourceFiles,
+        isMerged: true,
+      }));
+      setPipelineRows(restored);
+    }
+  }, [isDone, mergedExportData]); // eslint-disable-line react-hooks/exhaustive-deps
   const [phases, setPhases] = useState<PipelinePhase[]>(() => {
     if (progress.status === 'done') return [...ALL_DONE_PHASES];
     const base: PipelinePhase[] = [
@@ -184,16 +201,21 @@ export default function AlignMergePanel() {
 
     const currentPromptSettings = useStore.getState().promptSettings;
 
-    const body = {
-      extractionData: snapshot.results.map((r) => ({
-        fileId: r.fileId,
-        fileName: r.fileName,
-        groupId: r.groupId,
-        success: r.success,
-        data: r.data,
-        entries: r.entries,
-        error: r.error,
-      })),
+    const body: Record<string, unknown> = {
+      // Use server sessionId for disk-based reading (preferred)
+      ...(snapshot.serverSessionId ? { sessionId: snapshot.serverSessionId } : {
+        // Fallback: send extraction data inline (backward compat)
+        extractionData: snapshot.results.map((r) => ({
+          fileId: r.fileId,
+          fileName: r.fileName,
+          groupId: r.groupId,
+          success: r.success,
+          data: r.data,
+          entries: r.entries,
+          headerData: r.headerData,
+          error: r.error,
+        })),
+      }),
       groups: snapshot.groups.map((g) => ({ groupId: g.groupId, groupKey: g.groupKey })),
       ...(currentColumns.length > 0 ? { columns: currentColumns } : {}),
       prompts: {
@@ -201,7 +223,10 @@ export default function AlignMergePanel() {
         templateAlign: currentPromptSettings.templateAlign || undefined,
       },
       ...(useStore.getState().apiSettings.baseUrl || useStore.getState().apiSettings.apiKey || useStore.getState().apiSettings.model ? {
-        apiSettings: useStore.getState().apiSettings,
+        apiSettings: {
+          ...useStore.getState().apiSettings,
+          cacheExpiryHours: useStore.getState().cacheSettings.expiryHours || undefined,
+        },
       } : {}),
     };
 
@@ -338,6 +363,16 @@ export default function AlignMergePanel() {
                 success: true,
               })),
             );
+
+            // Clean up server temp files (deferred from extraction-panel)
+            const sIds = [...new Set(useStore.getState().files.map((f) => f.sessionId).filter(Boolean))] as string[]
+            sIds.forEach((sid) => {
+              fetch(`/api/upload/${sid}`, { method: 'DELETE' }).catch(() => {});
+            });
+            // Clear localStorage snapshot — align-merge done, no longer needed
+            localStorage.removeItem('ocr-extract-snapshot');
+            // Clear extraction snapshot to free memory
+            useStore.getState().clearExtractionSnapshot();
             break;
           }
 
@@ -408,14 +443,14 @@ export default function AlignMergePanel() {
     }
   }, [t, addResult, setMergedExportData, setProgress]);
 
-  // Auto-start when component mounts with extraction_done + template columns
+  // Auto-start when component mounts or progress transitions to extraction_done
   const hasStarted = useRef(false);
   useEffect(() => {
     if (progress.status === 'extraction_done' && !hasStarted.current && useStore.getState().templateColumns.length > 0) {
       hasStarted.current = true;
       handleAlignMerge();
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [progress.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ------------------------------------------------------------------
   // Retry single group
@@ -427,16 +462,19 @@ export default function AlignMergePanel() {
 
     setRetryingGroupId(groupId);
 
-    const body = {
-      extractionData: snapshot.results.map((r) => ({
-        fileId: r.fileId,
-        fileName: r.fileName,
-        groupId: r.groupId,
-        success: r.success,
-        data: r.data,
-        entries: r.entries,
-        error: r.error,
-      })),
+    const body: Record<string, unknown> = {
+      ...(snapshot.serverSessionId ? { sessionId: snapshot.serverSessionId } : {
+        extractionData: snapshot.results.map((r) => ({
+          fileId: r.fileId,
+          fileName: r.fileName,
+          groupId: r.groupId,
+          success: r.success,
+          data: r.data,
+          entries: r.entries,
+          headerData: r.headerData,
+          error: r.error,
+        })),
+      }),
       groups: snapshot.groups.map((g) => ({ groupId: g.groupId, groupKey: g.groupKey })),
       columns: currentColumns,
       retryGroupIds: [groupId],
@@ -445,7 +483,10 @@ export default function AlignMergePanel() {
         templateAlign: useStore.getState().promptSettings.templateAlign || undefined,
       },
       ...(useStore.getState().apiSettings.baseUrl || useStore.getState().apiSettings.apiKey || useStore.getState().apiSettings.model ? {
-        apiSettings: useStore.getState().apiSettings,
+        apiSettings: {
+          ...useStore.getState().apiSettings,
+          cacheExpiryHours: useStore.getState().cacheSettings.expiryHours || undefined,
+        },
       } : {}),
     };
 
@@ -462,6 +503,47 @@ export default function AlignMergePanel() {
 
       await consumeSSEStream(response, (event, parsed) => {
         switch (event) {
+          case 'phase':
+          case 'merge_start':
+          case 'align_start': {
+            setRetryPhase(parsed.phase ?? '');
+            break;
+          }
+
+          case 'schema_ready': {
+            setRetrySchemaHeaders(parsed.headers ?? []);
+            break;
+          }
+
+          case 'group_merged':
+          case 'group_aligned': {
+            const newRows: PipelineRow[] = (parsed.rows ?? []).map((r: any) => ({
+              id: r.id ?? '',
+              label: r.label ?? '',
+              data: r.data ?? {},
+              sourceFiles: r.sourceFiles ?? [],
+              isMerged: r.isMerged ?? false,
+              fieldConsistency: r.fieldConsistency,
+              mergeMethod: r.mergeMethod,
+            }));
+
+            setPipelineRows((prev) => {
+              const other = prev.filter((r) => r.id !== groupId && !r.id.startsWith(groupId + '-'));
+              return [...other, ...newRows];
+            });
+            break;
+          }
+
+          case 'group_error': {
+            addResult({
+              fileId: groupId,
+              fileName: t('review.systemError'),
+              success: false,
+              error: parsed.message ?? t('review.unknownError'),
+            });
+            break;
+          }
+
           case 'error': {
             addResult({
               fileId: 'system',
@@ -485,7 +567,17 @@ export default function AlignMergePanel() {
 
             setPipelineRows((prev) => {
               const other = prev.filter((r) => r.id !== groupId && !r.id.startsWith(groupId + '-'));
-              return [...other, ...newRows];
+              const updated = [...other, ...newRows];
+              // Sync mergedExportData so export step uses the latest data
+              setMergedExportData(
+                updated.map((row) => ({
+                  label: row.label,
+                  data: row.data,
+                  sourceFiles: row.sourceFiles,
+                  success: true,
+                })),
+              );
+              return updated;
             });
             break;
           }

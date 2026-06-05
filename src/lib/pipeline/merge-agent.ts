@@ -13,19 +13,154 @@ import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
 
 /**
  * Normalize a key for fuzzy matching against template columns.
- * Handles whitespace, fullwidth characters, and zero-width chars.
+ * Handles whitespace, fullwidth characters, zero-width chars,
+ * strips numeric/list prefixes (e.g. "1-病理诊断" → "病理诊断"),
+ * and strips common section/category prefixes (e.g. "基本信息-姓名" → "姓名").
  */
+
+/** Section prefixes that are category labels, not content-specific.
+ *  IMPORTANT: Sorted longest-first so "诊断意见-" matches before "诊断-". */
+const SECTION_PREFIXES = [
+  '全血细胞计数-',
+  '补充报告-',
+  '检验结果-',
+  '检验信息-',
+  '检验项目-',
+  '检验方法-',
+  '检测方法-',
+  '患者信息-',
+  '病理信息-',
+  '病理报告-',
+  '标本信息-',
+  '就诊信息-',
+  '诊断意见-',
+  '镜下诊断-',
+  '基本信息-',
+  '血常规-',
+  '患者-',
+  '诊断-',
+  '常规-',
+];
+
+/** Section prefix patterns that include a numeric suffix (e.g. "检验结果4-", "检验12-"). */
+const NUMBERED_SECTION_RE = /^(检验结果|检验)\d+\s*[-—–]\s*/;
+
 export function normalizeKey(key: string): string {
-  return key
+  let result = key
     .trim()
     .normalize('NFKC')
     .replace(/[\s\u200B-\u200D\uFEFF]+/g, '');
+  // Loop: strip prefixes until no more changes
+  let changed = true;
+  while (changed) {
+    changed = false;
+    // Strip numbered section prefixes: "检验结果4-", "检验12-", etc.
+    const before = result;
+    result = result.replace(NUMBERED_SECTION_RE, '');
+    if (result !== before) changed = true;
+    // Strip numeric/ordinal prefixes: "1-", "10-", "1 -", "10—", etc.
+    if (/^\d+\s*[-—–]\s*/.test(result)) {
+      result = result.replace(/^\d+\s*[-—–]\s*/, '');
+      changed = true;
+    }
+    // Strip section/category prefixes
+    for (const prefix of SECTION_PREFIXES) {
+      if (result.startsWith(prefix)) {
+        result = result.slice(prefix.length);
+        changed = true;
+        break;
+      }
+    }
+  }
+  // Strip AI artifact suffixes: trailing {, {:, {', etc.
+  result = cleanKeySuffix(result);
+  // Guard: if stripping produced empty string, return original (trimmed)
+  if (result.length === 0) return key.trim();
+  return result;
+}
+
+// ─── Key suffix cleaning ────────────────────────────────────────────────
+
+/**
+ * Strip AI artifact suffixes from key names.
+ * Removes trailing "{", "{:", "{'," and similar artifacts
+ * that the AI sometimes appends to field names.
+ */
+export function cleanKeySuffix(key: string): string {
+  // Strip trailing AI artifact characters: {, }, :, ', ", ,
+  return key.replace(/[{:\'",}\s]+$/g, '').trim();
+}
+
+// ─── Key validation ─────────────────────────────────────────────────────
+
+/** Known-good single-letter medical abbreviations that should not be filtered. */
+const VALID_SINGLE_LETTERS = new Set(['T', 'N', 'M']);
+
+/**
+ * Check whether a key looks like a valid field name (not a measurement value,
+ * date, ID, or special character that the AI mistakenly used as a key).
+ *
+ * Returns false for high-confidence garbage keys that should be filtered out.
+ */
+export function isValidKey(key: string): boolean {
+  if (!key || key.length === 0) return false;
+
+  // Single special character
+  if (/^[\)\*\+,\\.><↑→↓\-—]$/.test(key)) return false;
+
+  // Single Latin letter (except known medical abbreviations like TNM)
+  if (/^[A-Za-z]$/.test(key) && !VALID_SINGLE_LETTERS.has(key)) return false;
+
+  // Pure integer — could be an ID, index, or AI hallucination
+  if (/^\d+$/.test(key)) return false;
+
+  // Date pattern: YYYY/MM/DD or YYYY-MM-DD
+  if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(key)) return false;
+
+  // Time pattern: HH:MM or HH:MM:SS
+  if (/^\d{1,2}:\d{2}/.test(key)) return false;
+
+  // Measurement value as key: starts with decimal number + contains unit letters
+  // e.g. "0.0027L/L", "4.20mmol/L", "0.01mg/dL"
+  if (/^\d+\.\d+/.test(key) && /[a-zA-Z]/.test(key)) return false;
+
+  // Measurement with reference range: starts with number + unit + ( or {
+  // e.g. "1.19mmol/L(0.85-1.51)", "0.0027L/L(0.0011-0.0030){'"
+  if (/^\d+\.?\d*[a-zA-Z]+/.test(key) && /[\(\{]/.test(key)) return false;
+
+  // Percent-as-key: "14.1%{", "11.8%{'," etc.
+  if (/^\d+\.?\d*%/.test(key)) return false;
+
+  // Pure decimal number (no unit letters) — measurement without unit, e.g. "1.78", "5.722"
+  if (/^\d+\.\d+$/.test(key)) return false;
+
+  // IP address pattern: e.g. "16.22.184.45"
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(key)) return false;
+
+  return true;
 }
 
 /**
- * Normalize any value to a string. Handles measurement objects and arrays
- * safely, avoiding the "[object Object]" problem from raw String(v).
+ * Resolve a value from a data map using fuzzy matching.
+ * Handles compound slash keys: e.g. colKey "检验项目/病理项目/诊断项目"
+ * matches AI output key "检验项目" by checking each slash segment.
  */
+export function resolveTemplateColumnValue(
+  colKey: string,
+  normIndex: Map<string, unknown>,
+): unknown | undefined {
+  const normCol = normalizeKey(colKey)
+  const exact = normIndex.get(normCol)
+  if (exact !== undefined) return exact
+  if (colKey.includes('/')) {
+    for (const seg of colKey.split('/')) {
+      const segVal = normIndex.get(normalizeKey(seg))
+      if (segVal !== undefined) return segVal
+    }
+  }
+  return undefined
+}
+
 export function normalizeValue(v: unknown): string {
   if (v == null) return '';
 
@@ -82,16 +217,15 @@ function enforceTemplateColumns(
   data: Record<string, unknown>,
   columns: Array<{ key: string }>,
 ): Record<string, unknown> {
-  // Build normalized → original key index for fuzzy lookup
-  const normalizedIdx = new Map<string, string>();
-  for (const k of Object.keys(data)) {
-    normalizedIdx.set(normalizeKey(k), k);
+  // Build normalized → value index for fuzzy lookup
+  const normIndex = new Map<string, unknown>();
+  for (const [k, v] of Object.entries(data)) {
+    normIndex.set(normalizeKey(k), v);
   }
 
   const result: Record<string, unknown> = {};
   for (const col of columns) {
-    const originalKey = normalizedIdx.get(normalizeKey(col.key));
-    result[col.key] = originalKey !== undefined ? data[originalKey] : null;
+    result[col.key] = resolveTemplateColumnValue(col.key, normIndex) ?? null;
   }
   return result;
 }

@@ -45,6 +45,7 @@ export interface ExtractionResultItem {
   success: boolean;
   data?: Record<string, unknown>;
   entries?: Array<Record<string, unknown>>;
+  headerData?: Record<string, unknown>;
   error?: string;
 }
 
@@ -58,6 +59,10 @@ export interface ExtractionProgress {
 }
 
 export type ExportFormat = 'xlsx' | 'csv' | 'json';
+
+export interface CacheSettings {
+  expiryHours: number;
+}
 
 export interface ExportSettings {
   format: ExportFormat;
@@ -120,6 +125,14 @@ export interface AppState {
   exportSettings: ExportSettings;
   setExportSettings: (settings: Partial<ExportSettings>) => void;
 
+  // Document type
+  documentType: string;
+  setDocumentType: (type: string) => void;
+
+  // Cache settings
+  cacheSettings: CacheSettings;
+  setCacheExpiryHours: (hours: number) => void;
+
   // Prompt settings (empty string = use default)
   promptSettings: PromptSettings;
   setPromptSettings: (phase: keyof PromptSettings, value: string) => void;
@@ -147,10 +160,12 @@ export interface AppState {
       success: boolean;
       data?: Record<string, unknown>;
       entries?: Array<Record<string, unknown>>;
+      headerData?: Record<string, unknown>;
       imageDataUrl?: string;
       error?: string;
     }>;
     groups: Array<{ groupId: string; groupKey: string; fileCount: number }>;
+    serverSessionId?: string | null;
   } | null;
   setExtractionSnapshot: (snapshot: AppState['extractionSnapshot']) => void;
   clearExtractionSnapshot: () => void;
@@ -181,6 +196,12 @@ const DEFAULT_PROGRESS: ExtractionProgress = {
 
 const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   format: 'xlsx',
+};
+
+const DEFAULT_DOCUMENT_TYPE = '医疗病理信息系统';
+
+const DEFAULT_CACHE_SETTINGS: CacheSettings = {
+  expiryHours: 24,
 };
 
 const DEFAULT_PROMPT_SETTINGS: PromptSettings = {
@@ -266,6 +287,17 @@ export const useStore = create<AppState>()(
       resetPromptSettings: () =>
         set({ promptSettings: { ...DEFAULT_PROMPT_SETTINGS } }),
 
+      // --- Cache Settings ---
+      cacheSettings: { ...DEFAULT_CACHE_SETTINGS },
+      setCacheExpiryHours: (hours) =>
+        set((state) => ({
+          cacheSettings: { ...state.cacheSettings, expiryHours: hours },
+        })),
+
+      // --- Document Type ---
+      documentType: DEFAULT_DOCUMENT_TYPE,
+      setDocumentType: (type) => set({ documentType: type }),
+
       // --- API Settings ---
       apiSettings: { ...DEFAULT_API_SETTINGS },
       setApiSettings: (partial) =>
@@ -286,7 +318,10 @@ export const useStore = create<AppState>()(
       // --- Extraction Snapshot (transient) ---
       extractionSnapshot: null,
       setExtractionSnapshot: (snapshot) => set({ extractionSnapshot: snapshot }),
-      clearExtractionSnapshot: () => set({ extractionSnapshot: null }),
+      clearExtractionSnapshot: () => {
+        set({ extractionSnapshot: null });
+        localStorage.removeItem('ocr-extract-snapshot');
+      },
 
       // --- Merged export data ---
       mergedExportData: [],
@@ -301,7 +336,16 @@ export const useStore = create<AppState>()(
       // --- Resume ---
       interruptedSession: null,
       setInterruptedSession: (session) => set({ interruptedSession: session }),
-      restoreFromSession: (session) =>
+      restoreFromSession: (session) => {
+        // Check if session is too old — use configured cache expiry
+        const expiryHours = get().cacheSettings.expiryHours || 24;
+        const ageMs = Date.now() - (session.createdAt ?? 0);
+        const isExpired = ageMs > expiryHours * 60 * 60 * 1000;
+        if (isExpired) {
+          // Don't restore — server temp data is gone
+          set({ interruptedSession: null });
+          return;
+        }
         set({
           step: 'extract',
           files: session.files.map((f) => ({
@@ -323,9 +367,8 @@ export const useStore = create<AppState>()(
           interruptedSession: null,
           results: [],
           mergedExportData: [],
-        }),
-
-      // --- Reset ---
+        });
+      },
       resetAll: () =>
         set({
           step: 'upload',
@@ -334,6 +377,8 @@ export const useStore = create<AppState>()(
           progress: { ...DEFAULT_PROGRESS },
           exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
           promptSettings: { ...DEFAULT_PROMPT_SETTINGS },
+          cacheSettings: { ...DEFAULT_CACHE_SETTINGS },
+          documentType: DEFAULT_DOCUMENT_TYPE,
           templateColumns: [],
           templatePrompt: '',
           templateGenerated: false,
@@ -341,6 +386,7 @@ export const useStore = create<AppState>()(
           selectedField: null,
           selectedFileId: null,
           mergedExportData: [],
+          interruptedSession: null,
         }),
     }),
     {
@@ -364,6 +410,8 @@ export const useStore = create<AppState>()(
           exportSettings: state.exportSettings,
           locale: state.locale,
           promptSettings: state.promptSettings,
+          cacheSettings: state.cacheSettings,
+          documentType: state.documentType,
           ...(hasApiSettings ? {
             apiSettings: {
               baseUrl: state.apiSettings.baseUrl,
@@ -386,6 +434,30 @@ export const useStore = create<AppState>()(
           }
         }
         return persisted;
+      },
+      onRehydrateStorage: () => (state) => {
+        if (!state) return;
+        // Try to restore extractionSnapshot from localStorage (survives page refresh)
+        try {
+          const raw = localStorage.getItem('ocr-extract-snapshot');
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            // Minimal snapshot: groups + serverSessionId (data re-read from server disk)
+            // or fallback: groups + minimal results metadata
+            if (parsed.groups?.length > 0 && (parsed.serverSessionId || parsed.results?.length > 0)) {
+              setTimeout(() => {
+                useStore.setState({
+                  extractionSnapshot: {
+                    results: parsed.results ?? [],
+                    groups: parsed.groups,
+                    serverSessionId: parsed.serverSessionId ?? null,
+                  },
+                  progress: { ...useStore.getState().progress, status: 'extraction_done' },
+                });
+              }, 0);
+            }
+          }
+        } catch { /* ignore */ }
       },
     },
   ),

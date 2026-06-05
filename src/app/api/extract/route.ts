@@ -9,6 +9,9 @@ import { getTempDir } from '@/lib/temp-dir'
 import { parseJsonResponse } from '@/lib/pipeline/json-parser'
 import { isPrivateHost, sseEvent, workerPool, resolveApiSettings } from '@/lib/api-utils'
 import { cleanupExpiredSessions } from '@/lib/server-cleanup'
+import { writeResult, writeGroupsManifest, resultExists, readResult } from '@/lib/server-results'
+import { isValidKey, cleanKeySuffix, normalizeKey, resolveTemplateColumnValue } from '@/lib/pipeline/merge-agent'
+import { randomUUID } from 'crypto'
 
 export const maxDuration = 300
 import { groupFilesByPrefix, findGroupForFile } from '@/lib/pipeline/file-grouper'
@@ -19,6 +22,29 @@ import {
 } from '@/lib/pipeline/prompts'
 import { isReasoningModel, supportsJsonResponseFormat } from '@/lib/merge-utils'
 import type { PerFileResult } from '@/lib/pipeline/types'
+
+// ─── Key cleaning ─────────────────────────────────────────────────────────
+
+/** Strip invalid keys from extracted data before writing to disk. */
+function cleanResultKeys(
+  data: Record<string, unknown> | undefined,
+  entries: Array<Record<string, unknown>> | undefined,
+): { data?: Record<string, unknown>; entries?: Array<Record<string, unknown>> } {
+  const clean = (obj: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      const cleaned = normalizeKey(k);
+      if (isValidKey(cleaned) && cleaned.length > 0) {
+        out[cleaned] = v;
+      }
+    }
+    return out;
+  };
+  return {
+    data: data ? clean(data) : undefined,
+    entries: entries ? entries.map(clean).filter((e) => Object.keys(e).length > 0) : undefined,
+  };
+}
 
 type OpenAIError = Error & { status?: number }
 
@@ -46,6 +72,7 @@ interface ApiSettings {
 interface ExtractRequestBody {
   files: FileInput[]
   imageCompressThreshold?: number
+  documentType?: string
   prompts?: {
     extraction?: string
   }
@@ -211,9 +238,6 @@ function flattenObject(obj: Record<string, unknown>, prefix = ''): Record<string
 const MAX_REQUEST_SIZE = 100 * 1024 * 1024 // 100MB
 
 export async function POST(request: NextRequest) {
-  // Fire-and-forget: clean up expired temp sessions
-  cleanupExpiredSessions()
-
   const abortController = new AbortController()
 
   try {
@@ -222,7 +246,7 @@ export async function POST(request: NextRequest) {
     if (contentLength && parseInt(contentLength, 10) > MAX_REQUEST_SIZE) {
       return new Response(JSON.stringify({ error: '请求体过大，最大允许 100MB' }), {
         status: 413,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
       })
     }
 
@@ -232,13 +256,14 @@ export async function POST(request: NextRequest) {
       imageCompressThreshold = Number(process.env.IMAGE_COMPRESS_THRESHOLD) || 20,
       prompts: customPrompts,
       templateColumns,
+      documentType,
     } = body
 
     // Resolve prompt: schema-guided or legacy
     // User custom extraction prompt is always supplementary (<user_instructions>), never replaces column definitions.
     const isSchemaMode = templateColumns && templateColumns.length > 0
     const extractionPrompt = isSchemaMode
-      ? buildSchemaGuidedPrompt(templateColumns, customPrompts?.extraction)
+      ? buildSchemaGuidedPrompt(templateColumns, customPrompts?.extraction, documentType)
       : (customPrompts?.extraction
         ? EXTRACTION_SYSTEM_MESSAGE + `\n\n<user_instructions>\n${customPrompts.extraction.trim()}\n</user_instructions>`
         : EXTRACTION_SYSTEM_MESSAGE)
@@ -261,6 +286,12 @@ export async function POST(request: NextRequest) {
 
     // All model settings from .env, overridden by user-provided settings
     const resolved = resolveApiSettings(body.apiSettings)
+
+    // Fire-and-forget: clean up expired temp sessions (use client-provided expiry)
+    cleanupExpiredSessions(
+      resolved.cacheExpiryHours ? resolved.cacheExpiryHours * 60 * 60 * 1000 : undefined,
+    )
+
     const apiSettings: ApiSettings = {
       baseUrl: resolved.baseUrl,
       apiKey: resolved.apiKey,
@@ -272,14 +303,14 @@ export async function POST(request: NextRequest) {
     if (!files || files.length === 0) {
       return new Response(JSON.stringify({ error: '没有提供文件' }), {
         status: 400,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
       })
     }
 
     if (!apiSettings.baseUrl || !apiSettings.apiKey || !apiSettings.model) {
       return new Response(JSON.stringify({ error: 'API 设置不完整，请在 .env 中配置 API_BASE_URL, API_KEY, API_MODEL' }), {
         status: 400,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
       })
     }
 
@@ -287,7 +318,7 @@ export async function POST(request: NextRequest) {
     if (isPrivateHost(apiSettings.baseUrl)) {
       return new Response(JSON.stringify({ error: '不允许访问内网地址' }), {
         status: 400,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
       })
     }
 
@@ -316,9 +347,21 @@ export async function POST(request: NextRequest) {
           const fileGroups = groupFilesByPrefix(files)
           send('grouping_done', { groups: fileGroups.map((g) => ({ groupId: g.groupId, label: g.groupKey, fileCount: g.files.length })) })
 
+          // Derive sessionId from files (server upload session) or generate new one
+          const resultSessionId = files.find((f) => f.sessionId)?.sessionId || randomUUID()
+
+          // Write groups manifest to disk for align-merge
+          await writeGroupsManifest(resultSessionId, fileGroups.map((g) => ({
+            groupId: g.groupId,
+            groupKey: g.groupKey,
+            fileCount: g.files.length,
+            fileIds: g.files.map((f) => f.id),
+          })))
+
           // ── Phase 1: Per-file extraction ─────────────────────────────────
           send('phase', { phase: 'extracting' })
-          const perFileResults: PerFileResult[] = []
+          // Lightweight metadata only — actual data written to disk via writeResult()
+          const fileMeta: Array<{ fileId: string; fileName: string; groupId: string; success: boolean; error?: string }> = []
 
           const MAX_RETRIES = 3
 
@@ -326,8 +369,27 @@ export async function POST(request: NextRequest) {
             const fileId = file.id
             const fileName = file.name
             const group = findGroupForFile(fileGroups, file.id)
+            // Preserve existing groupId from disk (retries may create new groupIds)
+            const existingResult = await readResult(resultSessionId, fileId)
+            const groupId = existingResult?.groupId || group.groupId
 
-            send('file_start', { fileId, fileName, groupId: group.groupId })
+            send('file_start', { fileId, fileName, groupId: groupId })
+
+            // Check for cached result — skip AI call if already extracted
+            const cached = await resultExists(resultSessionId, fileId)
+            if (cached) {
+              fileMeta.push({ fileId, fileName, groupId: groupId, success: true })
+              send('file_complete', {
+                fileId,
+                fileName,
+                groupId: groupId,
+                success: true,
+                data: cached.data,
+                entries: cached.entries,
+                headerData: cached.headerData,
+              })
+              return
+            }
 
             const parsed = await parseFileContent(file, imageCompressThreshold)
 
@@ -491,21 +553,58 @@ export async function POST(request: NextRequest) {
                   continue
                 }
 
-                // ── Schema-guided mode: expect {entries: [...]} ──
+                // ── Schema-guided mode: expect {单值字段..., entries: [...]} ──
                 if (isSchemaMode) {
+                  let headerData: Record<string, unknown> = {}
                   let entries: Array<Record<string, unknown>> = []
+
                   if (extracted && typeof extracted === 'object' && !Array.isArray(extracted)) {
                     const obj = extracted as Record<string, unknown>
+
+                    // Extract top-level single-value fields (non-entries keys)
+                    const repeatingKeys = new Set(
+                      templateColumns.filter((c) => c.repeating).map((c) => normalizeKey(c.key)),
+                    )
+                    for (const [k, v] of Object.entries(obj)) {
+                      if (k === 'entries') continue
+                      if (repeatingKeys.has(normalizeKey(k))) continue
+                      headerData[normalizeKey(k)] = v
+                    }
+
+                    // Extract entries array
                     if (Array.isArray(obj.entries)) {
                       entries = obj.entries.filter((e) => e && typeof e === 'object' && !Array.isArray(e))
                     }
                   }
 
-                  // Enforce template columns on each entry
+                  // Validate headerData against single-value columns (with fuzzy matching)
+                  const singleCols = templateColumns.filter((c) => !c.repeating)
+                  const repeatingCols = templateColumns.filter((c) => c.repeating)
+
+                  if (singleCols.length > 0) {
+                    const normIndex = new Map<string, unknown>()
+                    for (const [k, v] of Object.entries(headerData)) {
+                      normIndex.set(normalizeKey(k), v)
+                    }
+                    const validatedHeader: Record<string, unknown> = {}
+                    for (const col of singleCols) {
+                      validatedHeader[col.key] = headerData[col.key]
+                        ?? resolveTemplateColumnValue(col.key, normIndex)
+                        ?? null
+                    }
+                    headerData = validatedHeader
+                  }
+
+                  // Validate entries against repeating columns (with fuzzy matching)
+                  const entryColumns = repeatingCols.length > 0 ? repeatingCols : templateColumns
                   const validatedEntries = entries.map((entry) => {
+                    const normIndex = new Map<string, unknown>()
+                    for (const [k, v] of Object.entries(entry)) {
+                      normIndex.set(normalizeKey(k), v)
+                    }
                     const row: Record<string, unknown> = {}
-                    for (const col of templateColumns) {
-                      row[col.key] = entry[col.key] ?? null
+                    for (const col of entryColumns) {
+                      row[col.key] = entry[col.key] ?? resolveTemplateColumnValue(col.key, normIndex) ?? null
                     }
                     return row
                   })
@@ -515,23 +614,24 @@ export async function POST(request: NextRequest) {
                     retryMessages = [
                       ...baseMessages,
                       { role: 'assistant' as const, content: fullContent },
-                      { role: 'user' as const, content: '上一次返回了空 entries 数组。请从文档中提取信息，输出 {"entries": [{...}]} 格式。' },
+                      { role: 'user' as const, content: '上一次返回了空 entries 数组。请从文档中提取信息，输出 {"姓名": "张三", "entries": [{...}]} 格式。' },
                     ]
                     lastError = 'Schema 模式提取结果为空（无 entries）'
                     continue
                   }
 
-                  // Guard: at least one entry must have non-null values
-                  const hasAnyData = validatedEntries.some(
-                    (entry) => Object.values(entry).some((v) => v !== null && v !== undefined),
-                  )
+                  // Guard: headerData or entries must have non-null values
+                  const hasAnyData = Object.values(headerData).some((v) => v !== null && v !== undefined)
+                    || validatedEntries.some(
+                      (entry) => Object.values(entry).some((v) => v !== null && v !== undefined),
+                    )
                   if (!hasAnyData) {
                     retryMessages = [
                       ...baseMessages,
                       { role: 'assistant' as const, content: fullContent },
-                      { role: 'user' as const, content: '上一次返回的所有 entry 值均为 null。请从文档中提取实际数据填入各列，确保至少一个字段有值。' },
+                      { role: 'user' as const, content: '上一次返回的所有字段值均为 null。请从文档中提取实际数据，单值字段放在顶层，多值字段放在 entries 中。' },
                     ]
-                    lastError = 'Schema 模式所有 entry 值均为 null'
+                    lastError = 'Schema 模式所有字段值均为 null'
                     continue
                   }
 
@@ -540,22 +640,25 @@ export async function POST(request: NextRequest) {
                     imageDataUrl = file.dataUrl
                   }
 
-                  perFileResults.push({
-                    fileId,
-                    fileName,
-                    groupId: group.groupId,
+                  const cleanedHeader = cleanResultKeys(headerData, undefined).data
+                  const cleanedEntries = cleanResultKeys(undefined, validatedEntries).entries
+
+                  await writeResult(resultSessionId, {
+                    fileId, fileName, groupId: groupId,
                     success: true,
-                    entries: validatedEntries,
-                    imageDataUrl,
+                    entries: cleanedEntries,
+                    headerData: cleanedHeader && Object.keys(cleanedHeader).length > 0 ? cleanedHeader : undefined,
                   })
+                  fileMeta.push({ fileId, fileName, groupId: groupId, success: true })
 
                   send('file_complete', {
                     fileId,
                     fileName,
-                    groupId: group.groupId,
+                    groupId: groupId,
                     success: true,
                     data: undefined,
-                    entries: validatedEntries,
+                    entries: cleanedEntries,
+                    headerData: cleanedHeader && Object.keys(cleanedHeader).length > 0 ? cleanedHeader : undefined,
                   })
 
                   lastError = ''
@@ -629,21 +732,20 @@ export async function POST(request: NextRequest) {
                   continue
                 }
 
-                perFileResults.push({
-                  fileId,
-                  fileName,
-                  groupId: group.groupId,
-                  success: true,
-                  data: finalData,
-                  imageDataUrl,
+                const cleaned2 = cleanResultKeys(finalData, undefined)
+
+                await writeResult(resultSessionId, {
+                  fileId, fileName, groupId: groupId,
+                  success: true, data: cleaned2.data,
                 })
+                fileMeta.push({ fileId, fileName, groupId: groupId, success: true })
 
                 send('file_complete', {
                   fileId,
                   fileName,
-                  groupId: group.groupId,
+                  groupId: groupId,
                   success: true,
-                  data: perFileResults[perFileResults.length - 1].data,
+                  data: cleaned2.data,
                 })
 
                 lastError = ''
@@ -693,42 +795,46 @@ export async function POST(request: NextRequest) {
                 const legacyFull = (legacyCompletion as unknown as OpenAI.ChatCompletion).choices?.[0]?.message?.content || ''
                 const legacyExtracted = parseJsonResponse(legacyFull)
                 if (legacyExtracted && typeof legacyExtracted === 'object' && !Array.isArray(legacyExtracted) && Object.keys(legacyExtracted).length > 0) {
-                  perFileResults.push({
-                    fileId,
-                    fileName,
-                    groupId: group.groupId,
-                    success: true,
-                    data: legacyExtracted as Record<string, unknown>,
-                    imageDataUrl: file.dataUrl?.startsWith('data:image') ? file.dataUrl : undefined,
+                  const cleaned3 = cleanResultKeys(legacyExtracted as Record<string, unknown>, undefined)
+                  await writeResult(resultSessionId, {
+                    fileId, fileName, groupId: groupId,
+                    success: true, data: cleaned3.data,
                   })
+                  fileMeta.push({ fileId, fileName, groupId: groupId, success: true })
                   send('file_complete', {
                     fileId,
                     fileName,
-                    groupId: group.groupId,
+                    groupId: groupId,
                     success: true,
-                    data: perFileResults[perFileResults.length - 1].data,
+                    data: cleaned3.data,
                   })
                   lastError = ''
                 } else {
-                  perFileResults.push({ fileId, fileName, groupId: group.groupId, success: false, error: lastError })
-                  send('file_complete', { fileId, fileName, groupId: group.groupId, success: false, error: lastError })
+                  await writeResult(resultSessionId, {
+                    fileId, fileName, groupId: groupId,
+                    success: false, error: lastError,
+                  })
+                  fileMeta.push({ fileId, fileName, groupId: groupId, success: false, error: lastError })
+                  send('file_complete', { fileId, fileName, groupId: groupId, success: false, error: lastError })
                 }
               } catch {
-                perFileResults.push({ fileId, fileName, groupId: group.groupId, success: false, error: lastError })
-                send('file_complete', { fileId, fileName, groupId: group.groupId, success: false, error: lastError })
+                await writeResult(resultSessionId, {
+                  fileId, fileName, groupId: groupId,
+                  success: false, error: lastError,
+                })
+                fileMeta.push({ fileId, fileName, groupId: groupId, success: false, error: lastError })
+                send('file_complete', { fileId, fileName, groupId: groupId, success: false, error: lastError })
               }
             } else if (lastError) {
-              perFileResults.push({
-                fileId,
-                fileName,
-                groupId: group.groupId,
-                success: false,
-                error: lastError,
+              await writeResult(resultSessionId, {
+                fileId, fileName, groupId: groupId,
+                success: false, error: lastError,
               })
+              fileMeta.push({ fileId, fileName, groupId: groupId, success: false, error: lastError })
               send('file_complete', {
                 fileId,
                 fileName,
-                groupId: group.groupId,
+                groupId: groupId,
                 success: false,
                 error: lastError,
               })
@@ -738,16 +844,8 @@ export async function POST(request: NextRequest) {
           // ── Send extraction_done with results and groups ──────────────────
           // Send extraction_done with results and groups (include imageDataUrl for preview)
           send('extraction_done', {
-            results: perFileResults.map((r) => ({
-              fileId: r.fileId,
-              fileName: r.fileName,
-              groupId: r.groupId,
-              success: r.success,
-              data: r.data,
-              entries: r.entries,
-              error: r.error,
-              imageDataUrl: r.imageDataUrl,
-            })),
+            sessionId: resultSessionId,
+            results: fileMeta,
             groups: fileGroups.map((g) => ({
               groupId: g.groupId,
               groupKey: g.groupKey,
@@ -773,7 +871,7 @@ export async function POST(request: NextRequest) {
 
     return new Response(stream, {
       headers: {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no',
@@ -783,7 +881,7 @@ export async function POST(request: NextRequest) {
     const message = err instanceof Error ? err.message : '服务器内部错误'
     return new Response(JSON.stringify({ error: message }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
     })
   }
 }

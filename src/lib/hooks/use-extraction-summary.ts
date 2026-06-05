@@ -7,6 +7,19 @@ interface ExtractionSummary {
   failed: number;
 }
 
+/** Collect all keys from both r.data and r.entries[]. */
+function collectKeysFromResult(r: { success: boolean; data?: Record<string, unknown>; entries?: Array<Record<string, unknown>> }): string[] {
+  if (!r.success) return [];
+  const keys: string[] = [];
+  if (r.data) keys.push(...Object.keys(r.data));
+  if (r.entries) {
+    for (const entry of r.entries) {
+      keys.push(...Object.keys(entry));
+    }
+  }
+  return keys;
+}
+
 /**
  * Shared hook to compute extraction summary and field lists from the
  * extraction snapshot. Replaces duplicate useMemo logic across 3 panels.
@@ -28,10 +41,8 @@ export function useExtractionSummary() {
     if (!extractionSnapshot) return [];
     const fieldSet = new Set<string>();
     for (const r of extractionSnapshot.results) {
-      if (r.success && r.data) {
-        for (const key of Object.keys(r.data)) {
-          fieldSet.add(key);
-        }
+      for (const key of collectKeysFromResult(r)) {
+        fieldSet.add(key);
       }
     }
     return Array.from(fieldSet);
@@ -41,10 +52,8 @@ export function useExtractionSummary() {
     if (!extractionSnapshot) return [];
     const keyCount = new Map<string, number>();
     for (const r of extractionSnapshot.results) {
-      if (r.success && r.data) {
-        for (const key of Object.keys(r.data)) {
-          keyCount.set(key, (keyCount.get(key) || 0) + 1);
-        }
+      for (const key of collectKeysFromResult(r)) {
+        keyCount.set(key, (keyCount.get(key) || 0) + 1);
       }
     }
     return Array.from(keyCount.entries())

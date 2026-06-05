@@ -3,9 +3,8 @@ import { join } from 'path';
 
 /**
  * Get the temp directory for OCR file storage.
- * In Electron, uses ELECTRON_TMPDIR env var (set by main process).
- * In web/server mode, falls back to system tmpdir + 'ocr-extract'.
+ * Priority: OCR_CACHE_DIR > ELECTRON_TMPDIR > system tmpdir + 'ocr-extract'.
  */
 export function getTempDir(): string {
-  return process.env.ELECTRON_TMPDIR || join(tmpdir(), 'ocr-extract');
+  return process.env.OCR_CACHE_DIR || process.env.ELECTRON_TMPDIR || join(tmpdir(), 'ocr-extract');
 }

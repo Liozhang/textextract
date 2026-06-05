@@ -26,8 +26,10 @@ export interface PerFileResult {
   success: boolean;
   /** Flat object (legacy mode) */
   data?: Record<string, unknown>;
-  /** Schema-guided multi-row output */
+  /** Schema-guided multi-row output (repeating column entries) */
   entries?: Array<Record<string, unknown>>;
+  /** Schema-guided single-value header fields (non-repeating columns) */
+  headerData?: Record<string, unknown>;
   imageDataUrl?: string;
   error?: string;
 }
@@ -48,7 +50,7 @@ export interface MergedRecord {
   imageDataUrl?: string;
   sourceFileNames: string[];
   mergedCount: number;
-  mergeMethod: 'ai' | 'single';
+  mergeMethod: 'ai' | 'single' | 'programmatic';
   conflicts: ConflictInfo[];
 }
 

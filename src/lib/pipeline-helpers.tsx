@@ -100,8 +100,8 @@ export async function consumeSSEStream(
       try {
         const parsed = JSON.parse(evt.data);
         onEvent(evt.event, parsed);
-      } catch {
-        // ignore JSON parse errors
+      } catch (e) {
+        console.warn('[SSE] JSON parse error for event', evt.event, ':', e instanceof Error ? e.message : e);
       }
     }
   }
@@ -113,8 +113,8 @@ export async function consumeSSEStream(
       try {
         const parsed = JSON.parse(evt.data);
         onEvent(evt.event, parsed);
-      } catch {
-        // ignore JSON parse errors
+      } catch (e) {
+        console.warn('[SSE] JSON parse error in tail buffer for event', evt.event, ':', e instanceof Error ? e.message : e);
       }
     }
   }
@@ -141,6 +141,7 @@ export function formatMergeMethod(method: string | undefined, t: (key: string) =
   switch (method) {
     case 'ai': return { label: t('review.mergeMethodAi'), isFallback: false };
     case 'single': return { label: t('review.mergeMethodSingle'), isFallback: false };
+    case 'programmatic': return { label: t('review.mergeMethodProgrammatic'), isFallback: false };
     default: return { label: t('review.mergedRecords'), isFallback: false };
   }
 }

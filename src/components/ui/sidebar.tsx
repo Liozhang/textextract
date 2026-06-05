@@ -539,6 +539,7 @@ function SidebarMenuButton({
         side="right"
         align="center"
         hidden={state !== "collapsed" || isMobile}
+        suppressHydrationWarning
         {...tooltip}
       />
     </Tooltip>

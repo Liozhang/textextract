@@ -14,6 +14,7 @@ export interface SessionData {
     success: boolean
     data?: Record<string, unknown>
     entries?: Array<Record<string, unknown>>
+    headerData?: Record<string, unknown>
     error?: string
   }>
   groups: Array<{ groupId: string; groupKey: string; fileCount: number }>
@@ -35,6 +36,7 @@ export interface SessionData {
   extractionSnapshot: {
     results: SessionData['results']
     groups: SessionData['groups']
+    serverSessionId?: string | null
   } | null
   batchTimings: number[]
 }

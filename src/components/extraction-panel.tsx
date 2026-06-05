@@ -51,7 +51,6 @@ const INIT_PHASES: PipelinePhase[] = [
 ];
 
 function getBatchSize(fileCount: number): number {
-  if (fileCount <= 20) return 5;
   if (fileCount <= 100) return 5;
   if (fileCount <= 200) return 8;
   return 10;
@@ -81,13 +80,15 @@ export default function ExtractionPanel() {
   const setMergedExportData = useStore((s) => s.setMergedExportData);
   const promptSettings = useStore((s) => s.promptSettings);
   const apiSettings = useStore((s) => s.apiSettings);
+  const cacheSettings = useStore((s) => s.cacheSettings);
+  const documentType = useStore((s) => s.documentType);
   const extractionSnapshot = useStore((s) => s.extractionSnapshot);
   const setExtractionSnapshot = useStore((s) => s.setExtractionSnapshot);
   const updateFile = useStore((s) => s.updateFile);
 
   const abortRef = useRef<AbortController | null>(null);
   // Ref to track latest extraction state for beforeunload persistence
-  const sessionStateRef = useRef<{ sessionId: string; results: SessionData['results']; groups: SessionData['groups']; total: number } | null>(null);
+  const sessionStateRef = useRef<{ sessionId: string; results: SessionData['results']; groups: SessionData['groups']; total: number; serverSessionId?: string | null } | null>(null);
   const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set());
   const [eta, setEta] = useState<string | null>(null);
   const [batchTimings, setBatchTimings] = useState<number[]>([]);
@@ -115,7 +116,7 @@ export default function ExtractionPanel() {
   );
 
   const isExtracting = progress.status === 'extracting';
-  const isExtractionDone = progress.status === 'extraction_done';
+  const isExtractionDone = progress.status === 'extraction_done' || progress.status === 'done' || progress.status === 'aligning_merging';
   const canStart = files.length > 0;
 
   // Extracted fields from snapshot
@@ -150,7 +151,7 @@ export default function ExtractionPanel() {
     }
 
     // Generate session ID for IndexedDB persistence
-    const sessionId = isResume ? crypto.randomUUID() : crypto.randomUUID();
+    const sessionId = crypto.randomUUID();
 
     // Note: server temp files are NOT cleaned up here.
     // They are needed during extraction (API reads files from server temp storage).
@@ -191,7 +192,7 @@ export default function ExtractionPanel() {
       const missingCount = filesToExtract.length - availableFiles.length;
       if (missingCount > 0) {
         toast.warning(
-          `${missingCount} 个文件的临时数据已过期，将保留已有提取结果。如需重新提取，请重新上传这些文件。`,
+          t('review.filesExpired', { count: missingCount }),
           { duration: 8000 },
         );
       }
@@ -210,7 +211,7 @@ export default function ExtractionPanel() {
             fileName: f.name,
             groupId: '',
             success: false,
-            error: '服务器临时文件已过期，请重新上传',
+            error: t('review.serverTempExpired'),
           });
         }
       }
@@ -264,11 +265,13 @@ export default function ExtractionPanel() {
       success: boolean;
       data?: Record<string, unknown>;
       entries?: Array<Record<string, unknown>>;
+      headerData?: Record<string, unknown>;
       error?: string;
       imageDataUrl?: string;
     }> = isResume ? [...existingResults] : [];
     let accumulatedGroups: Array<{ groupId: string; groupKey: string; fileCount: number }> =
       isResume && snapshot!.groups.length > 0 ? [...snapshot!.groups] : [];
+    let serverSessionId: string | null = isResume && snapshot!.serverSessionId ? snapshot!.serverSessionId : null;
 
     setTotalBatches(batches.length);
     setBatchTimings([]);
@@ -305,6 +308,7 @@ export default function ExtractionPanel() {
               return rest;
             }),
             groups: state.groups,
+            serverSessionId: state.serverSessionId || null,
           },
           batchTimings: [],
         };
@@ -334,12 +338,14 @@ export default function ExtractionPanel() {
           prompts: {
             extraction: promptSettings.extraction || undefined,
           },
+          documentType: documentType || undefined,
           ...(apiSettings.baseUrl || apiSettings.apiKey || apiSettings.model ? {
             apiSettings: {
               baseUrl: apiSettings.baseUrl || undefined,
               apiKey: apiSettings.apiKey || undefined,
               model: apiSettings.model || undefined,
               concurrency: apiSettings.concurrency || undefined,
+              cacheExpiryHours: cacheSettings.expiryHours || undefined,
             },
           } : {}),
           ...(useStore.getState().templateColumns.length > 0
@@ -395,12 +401,19 @@ export default function ExtractionPanel() {
                   ),
                 );
               }
-              if (!accumulatedGroups.length) {
-                accumulatedGroups = (parsed.groups || []).map((g: any) => ({
-                  groupId: g.groupId ?? g.label ?? '',
-                  groupKey: g.groupKey ?? g.label ?? '',
-                  fileCount: g.fileCount ?? 1,
-                }));
+              // Merge groups across batches by groupId (which is now groupKey, stable)
+              for (const g of (parsed.groups || [])) {
+                const gId = g.groupId ?? g.label ?? '';
+                const existing = accumulatedGroups.find(ag => ag.groupId === gId);
+                if (existing) {
+                  existing.fileCount += g.fileCount ?? 1;
+                } else {
+                  accumulatedGroups.push({
+                    groupId: gId,
+                    groupKey: g.groupKey ?? g.label ?? '',
+                    fileCount: g.fileCount ?? 1,
+                  });
+                }
               }
               break;
             }
@@ -442,28 +455,36 @@ export default function ExtractionPanel() {
                   ),
                 );
               }
-              addResult({
+              const fileResult = {
                 fileId: String(parsed.fileId ?? ''),
                 fileName: parsed.fileName ?? '',
+                groupId: String(parsed.groupId ?? ''),
                 success: parsed.success ?? false,
                 data: parsed.data,
                 entries: parsed.entries,
+                headerData: parsed.headerData,
                 error: parsed.error,
-              });
+              };
+              addResult(fileResult);
+              // Keep accumulatedResults in sync so extraction_done merge has real data
+              const existingIdx = accumulatedResults.findIndex(r => r.fileId === fileResult.fileId);
+              if (existingIdx >= 0) {
+                accumulatedResults[existingIdx] = fileResult;
+              } else {
+                accumulatedResults.push(fileResult);
+              }
               if (parsed.success) {
                 updateFile(String(parsed.fileId ?? ''), { dataUrl: undefined, content: undefined });
               }
-              // Update ref for beforeunload persistence
+              // Update ref for beforeunload persistence (dedup by fileId)
               if (sessionStateRef.current) {
-                sessionStateRef.current.results.push({
-                  fileId: String(parsed.fileId ?? ''),
-                  fileName: parsed.fileName ?? '',
-                  groupId: String(parsed.groupId ?? ''),
-                  success: parsed.success ?? false,
-                  data: parsed.data,
-                  entries: parsed.entries,
-                  error: parsed.error,
-                });
+                const refResults = sessionStateRef.current.results;
+                const dupIdx = refResults.findIndex(r => r.fileId === fileResult.fileId);
+                if (dupIdx >= 0) {
+                  refResults[dupIdx] = fileResult;
+                } else {
+                  refResults.push(fileResult);
+                }
               }
               persistToLocalStorage();
               break;
@@ -488,6 +509,7 @@ export default function ExtractionPanel() {
                   success: r.success ?? false,
                   data: r.data,
                   entries: r.entries,
+                  headerData: r.headerData,
                   error: r.error,
                   imageDataUrl: r.imageDataUrl,
                 };
@@ -506,18 +528,27 @@ export default function ExtractionPanel() {
               }
               accumulatedResults.length = 0;
               accumulatedResults.push(...resultMap.values());
-              if (!accumulatedGroups.length) {
-                accumulatedGroups = (parsed.groups || []).map((g: any) => ({
-                  groupId: g.groupId ?? g.label ?? '',
-                  groupKey: g.groupKey ?? g.label ?? '',
-                  fileCount: g.fileCount ?? 1,
-                }));
+              // Merge groups from this batch (same stable groupId logic)
+              for (const g of (parsed.groups || [])) {
+                const gId = g.groupId ?? g.label ?? '';
+                const existing = accumulatedGroups.find(ag => ag.groupId === gId);
+                if (existing) {
+                  existing.fileCount += g.fileCount ?? 1;
+                } else {
+                  accumulatedGroups.push({
+                    groupId: gId,
+                    groupKey: g.groupKey ?? g.label ?? '',
+                    fileCount: g.fileCount ?? 1,
+                  });
+                }
               }
               // Update ref with latest accumulated results + groups
               if (sessionStateRef.current) {
                 sessionStateRef.current.results = [...accumulatedResults];
                 sessionStateRef.current.groups = [...accumulatedGroups];
               }
+              // Capture server sessionId for align-merge disk reading
+              if (parsed.sessionId) serverSessionId = parsed.sessionId;
               break;
             }
 
@@ -574,7 +605,7 @@ export default function ExtractionPanel() {
           templateColumns: useStore.getState().templateColumns.length > 0
             ? useStore.getState().templateColumns
             : null,
-          extractionSnapshot: { results: accumulatedResults, groups: accumulatedGroups },
+          extractionSnapshot: { results: accumulatedResults, groups: accumulatedGroups, serverSessionId },
           batchTimings: [],
         }).catch(() => {});
         // Also persist to localStorage as a fallback (survives page unload)
@@ -603,6 +634,7 @@ export default function ExtractionPanel() {
         setExtractionSnapshot({
           results: accumulatedResults,
           groups: accumulatedGroups,
+          serverSessionId,
         });
         setPhases((prev) =>
           prev.map((p) =>
@@ -616,11 +648,26 @@ export default function ExtractionPanel() {
         setEta(null);
         sessionStateRef.current = null; // Clear ref — no need to persist anymore
         localStorage.removeItem('ocr-extract-interrupted');
-        clearSession(sessionId).catch(() => {});
-        // Clean up server temp files on successful completion
-        allSessionIds.forEach((sid) => {
-          fetch(`/api/upload/${sid}`, { method: 'DELETE' }).catch(() => {});
-        });
+        // Persist lightweight snapshot to localStorage (serverSessionId + groups only).
+        // If serverSessionId is available, full data can be re-read from server disk on refresh.
+        // If not, store minimal metadata for recovery.
+        try {
+          localStorage.setItem('ocr-extract-snapshot', JSON.stringify({
+            groups: accumulatedGroups,
+            serverSessionId,
+            // Only include serverSessionId path or minimal fallback
+            ...(serverSessionId ? { serverSessionId } : {
+              results: accumulatedResults.map((r) => ({
+                fileId: r.fileId,
+                fileName: r.fileName,
+                groupId: r.groupId,
+                success: r.success,
+              })),
+            }),
+          }));
+        } catch { /* quota exceeded — ignore, IndexedDB session is the backup */ }
+        // NOTE: IndexedDB session and server temp files NOT deleted here — align-merge still needs them.
+        // Cleanup happens after align-merge completes (in align-merge-panel.tsx).
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
@@ -636,6 +683,7 @@ export default function ExtractionPanel() {
           setExtractionSnapshot({
             results: savedResults,
             groups: savedGroups,
+            serverSessionId,
           });
           setProgress({ status: 'extraction_done', currentFile: '' });
           // Persist interrupted session to IndexedDB for resume
@@ -659,7 +707,7 @@ export default function ExtractionPanel() {
             templateColumns: useStore.getState().templateColumns.length > 0
               ? useStore.getState().templateColumns
               : null,
-            extractionSnapshot: { results: savedResults, groups: savedGroups },
+            extractionSnapshot: { results: savedResults, groups: savedGroups, serverSessionId },
             batchTimings: [],
           }).catch(() => {});
         } else {
@@ -746,8 +794,12 @@ export default function ExtractionPanel() {
       prompts: {
         extraction: useStore.getState().promptSettings.extraction || undefined,
       },
+      documentType: useStore.getState().documentType || undefined,
       ...(useStore.getState().apiSettings.baseUrl || useStore.getState().apiSettings.apiKey || useStore.getState().apiSettings.model ? {
-        apiSettings: useStore.getState().apiSettings,
+        apiSettings: {
+          ...useStore.getState().apiSettings,
+          cacheExpiryHours: useStore.getState().cacheSettings.expiryHours || undefined,
+        },
       } : {}),
       ...(useStore.getState().templateColumns.length > 0
         ? { templateColumns: useStore.getState().templateColumns }
