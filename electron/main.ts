@@ -1,5 +1,5 @@
 import { app, BrowserWindow } from 'electron';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { join } from 'path';
 import { mkdir } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -20,50 +20,63 @@ async function startServer(): Promise<void> {
   const tmpDir = getAppTmpDir();
   await mkdir(tmpDir, { recursive: true });
 
-  let serverPath: string;
-  let execPath: string;
-
   if (isDev) {
     // Dev: just connect to the already-running next dev server
     return;
   }
 
   // Production: use Electron's bundled Node to run standalone server
-  execPath = process.execPath;
-  serverPath = join(process.resourcesPath, 'standalone', 'server.js');
+  const execPath = process.execPath;
+  const serverPath = join(process.resourcesPath, 'standalone', 'server.js');
 
-  return new Promise((resolve) => {
-    serverProcess = spawn(execPath, [serverPath], {
-      env: {
-        ...process.env,
-        NODE_ENV: 'production',
-        PORT: String(PORT),
-        HOSTNAME: '127.0.0.1',
-        ELECTRON_TMPDIR: tmpDir,
-        NODE_PATH: join(process.resourcesPath, 'standalone', 'node_modules'),
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    serverProcess.stdout?.on('data', (data: Buffer) => {
-      const output = data.toString();
-      if (output.includes('Ready') || output.includes('started')) {
-        resolve();
-      }
-    });
-
-    serverProcess.stderr?.on('data', (data: Buffer) => {
-      console.error('[server]', data.toString());
-    });
-
-    serverProcess.on('error', (err) => {
-      console.error('[server] Failed to start:', err);
-      resolve();
-    });
-
-    // Fallback: resolve after 8s
-    setTimeout(() => resolve(), 8000);
+  serverProcess = spawn(execPath, [serverPath], {
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      PORT: String(PORT),
+      HOSTNAME: '127.0.0.1',
+      ELECTRON_TMPDIR: tmpDir,
+      NODE_PATH: join(process.resourcesPath, 'standalone', 'node_modules'),
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
+
+  serverProcess.stdout?.on('data', (data: Buffer) => {
+    console.log('[server]', data.toString().trimEnd());
+  });
+
+  serverProcess.stderr?.on('data', (data: Buffer) => {
+    console.error('[server]', data.toString().trimEnd());
+  });
+
+  serverProcess.on('error', (err) => {
+    console.error('[server] Failed to start:', err);
+  });
+
+  serverProcess.on('close', (code) => {
+    if (code !== null && code !== 0) {
+      console.error(`[server] Exited with code ${code}`);
+    }
+  });
+
+  // Poll HTTP until server responds or timeout (15s)
+  const baseUrl = `http://127.0.0.1:${PORT}`;
+  const maxWait = 15000;
+  const interval = 300;
+  const start = Date.now();
+  while (Date.now() - start < maxWait) {
+    try {
+      const res = await fetch(baseUrl, { signal: AbortSignal.timeout(500) });
+      if (res.ok) {
+        console.log('[server] Ready');
+        return;
+      }
+    } catch {
+      // Not ready yet
+    }
+    await new Promise((r) => setTimeout(r, interval));
+  }
+  console.warn('[server] Timed out waiting for server, proceeding anyway');
 }
 
 function createWindow(): void {

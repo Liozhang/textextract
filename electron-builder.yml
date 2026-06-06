@@ -1,14 +1,16 @@
 appId: com.message-extract.app
 productName: Message Extract
+
 directories:
   buildResources: build
-  output: dist-electron
+  output: dist-electron/output
 
 win:
   target:
     - target: nsis
       arch:
         - x64
+  icon: build/icon.ico
 
 nsis:
   oneClick: false
@@ -18,9 +20,26 @@ nsis:
   shortcutName: Message Extract
   uninstallDisplayName: Message Extract
 
+compression: maximum
+
 files:
   - dist-electron/app/**/*
   - "!node_modules/**/*"
+  - "!**/*.map"
+  - "!src/**/*"
+  - "!test*/**/*"
+  - "!electron/**/*"
+  - "!scripts/**/*"
+  - "!public/**/*"
+  - "!docs/**/*"
+  - "!build/**/*"
+  - "!.next/**/*"
+  - "!dist-electron/output/**/*"
+  - "!dist-electron/win-unpacked/**/*"
+  - "!*.png"
+  - "!*.log"
+  - "!*.ts"
+  - "!.env*"
 
 extraResources:
   - from: .next/standalone/server.js
@@ -38,7 +57,10 @@ extraResources:
       - "!@next/swc-*/*-win32-ia32*"
   - from: .next/standalone/.next
     to: standalone/.next
+    filter:
+      - "**/*"
+      - "!**/*.map"
   - from: .next/static
     to: standalone/.next/static
 
-asar: false
+asar: true
