@@ -102,6 +102,8 @@ export default function TemplatePanel({
   const setTemplatePrompt = useStore((s) => s.setTemplatePrompt);
   const setTemplateGenerated = useStore((s) => s.setTemplateGenerated);
   const resetTemplate = useStore((s) => s.resetTemplate);
+  const documentType = useStore((s) => s.documentType);
+  const setDocumentType = useStore((s) => s.setDocumentType);
 
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
@@ -347,6 +349,21 @@ export default function TemplatePanel({
 
   return (
     <div className="space-y-4">
+      {/* ── Document Type ── */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          {t('settings.documentType')}
+        </div>
+        <Input
+          value={documentType}
+          onChange={(e) => setDocumentType(e.target.value)}
+          placeholder={t('settings.documentTypePlaceholder')}
+        />
+        <p className="text-xs text-muted-foreground">{t('settings.documentTypeHint')}</p>
+      </div>
+
+      <Separator />
+
       {/* ── Preset template selector ── */}
       <div className="space-y-2">
         <div className="flex items-center gap-2 text-sm font-semibold">

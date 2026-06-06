@@ -24,10 +24,6 @@ interface AlignMergeRequestBody {
   extractionData?: PerFileResult[]
   groups: Array<{ groupId: string; groupKey: string }>
   columns?: ColumnConstraint[]
-  prompts?: {
-    merge?: string
-    templateAlign?: string
-  }
   apiSettings?: {
     baseUrl?: string
     apiKey?: string
@@ -114,6 +110,7 @@ const MAX_REQUEST_SIZE = 100 * 1024 * 1024 // 100MB
 
 export async function POST(request: NextRequest) {
   const abortController = new AbortController()
+  console.log('[align-merge] Request received')
 
   try {
     // Security: check request body size
@@ -131,7 +128,6 @@ export async function POST(request: NextRequest) {
       extractionData: inlineData,
       groups: allGroups,
       columns: templateColumns,
-      prompts: customPrompts,
       apiSettings: apiSettingsOverride,
       retryGroupIds,
     } = body
@@ -139,8 +135,11 @@ export async function POST(request: NextRequest) {
     // Load extraction data: from disk (sessionId) or from request body (backward compat)
     let extractionData = inlineData || []
     if (!extractionData.length && sessionId) {
+      console.log('[align-merge] Loading from disk, sessionId:', sessionId)
       extractionData = await readAllResults(sessionId)
+      console.log('[align-merge] Loaded', extractionData.length, 'results from disk')
     }
+    console.log('[align-merge] Total extractionData:', extractionData.length, 'groups:', allGroups?.length, 'hasSchemaEntries:', extractionData.some((r) => r.success && ((r.entries?.length ?? 0) > 0 || Object.keys(r.data ?? {}).length > 0)))
 
     const isRetry = retryGroupIds && retryGroupIds.length > 0
     const groups = isRetry
@@ -168,34 +167,45 @@ export async function POST(request: NextRequest) {
     const perCallTimeout = Math.min(600_000, Math.max(baseTimeout, 120_000))
 
     // Resolve prompts
-    const mergePrompt = customPrompts?.merge || MERGE_SYSTEM_MESSAGE
-    const templateAlignPrompt = customPrompts?.templateAlign || TEMPLATE_ALIGN_SYSTEM_MESSAGE
+    const mergePrompt = MERGE_SYSTEM_MESSAGE
+    const templateAlignPrompt = TEMPLATE_ALIGN_SYSTEM_MESSAGE
 
-    const apiSettings = resolveApiSettings(apiSettingsOverride)
+    // Determine path: fast (no AI) or legacy (needs AI)
+    // Determine path: fast (no AI) or legacy (needs AI)
+    const hasSchemaEntries = extractionData.some(
+      (r) => r.success && ((r.entries && r.entries.length > 0) || (r.data && Object.keys(r.data).length > 0)),
+    )
+
+    const apiSettings = hasSchemaEntries ? resolveApiSettings(apiSettingsOverride) : null
 
     // Fire-and-forget: clean up expired temp sessions (use client-provided expiry)
     cleanupExpiredSessions(
       apiSettings.cacheExpiryHours ? apiSettings.cacheExpiryHours * 60 * 60 * 1000 : undefined,
     )
 
-    if (!apiSettings.baseUrl || !apiSettings.apiKey || !apiSettings.model) {
-      return new Response(JSON.stringify({ error: 'API 设置不完整，请在设置中配置或在 .env 中配置 API_BASE_URL, API_KEY, API_MODEL' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      })
+    // API settings only required for legacy path (AI calls)
+    if (!hasSchemaEntries) {
+      if (!apiSettings || !apiSettings.baseUrl || !apiSettings.apiKey || !apiSettings.model) {
+        return new Response(JSON.stringify({ error: 'API 设置不完整，请在设置中配置或在 .env 中配置 API_BASE_URL, API_KEY, API_MODEL' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        })
+      }
+
+      if (isPrivateHost(apiSettings.baseUrl)) {
+        return new Response(JSON.stringify({ error: '不允许访问内网地址' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        })
+      }
     }
 
-    if (isPrivateHost(apiSettings.baseUrl)) {
-      return new Response(JSON.stringify({ error: '不允许访问内网地址' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      })
-    }
-
-    const openai = new OpenAI({
-      baseURL: apiSettings.baseUrl,
-      apiKey: apiSettings.apiKey,
-    })
+    const openai = apiSettings
+      ? new OpenAI({
+          baseURL: apiSettings.baseUrl,
+          apiKey: apiSettings.apiKey,
+        })
+      : null
 
     // Determine output headers: template columns > all unique keys
     const allKeys = new Set<string>()
@@ -227,6 +237,7 @@ export async function POST(request: NextRequest) {
     const stream = new ReadableStream({
       async start(controller) {
         const encoder = new TextEncoder()
+        console.log('[align-merge] Stream started')
 
         function send(event: string, data: unknown) {
           try {
@@ -240,10 +251,8 @@ export async function POST(request: NextRequest) {
 
         try {
           // ── Fast path: schema-guided extraction → row assembly ──
-          const hasSchemaEntries = extractionData.some(
-            (r) => r.success && ((r.entries && r.entries.length > 0) || (r.data && Object.keys(r.data).length > 0)),
-          )
           if (hasSchemaEntries) {
+            console.log('[align-merge] Fast path: processing', extractionData.length, 'results,', groups.length, 'groups')
             send('phase', { phase: 'merging' })
 
             // Detect nested format: some results have headerData
@@ -532,6 +541,7 @@ export async function POST(request: NextRequest) {
               }
             }
 
+            console.log('[align-merge] Fast path done, sending all_done')
             send('all_done', {
               totalFiles: extractionData.length,
               totalGroups: allGroups.length,
@@ -688,6 +698,7 @@ export async function POST(request: NextRequest) {
             };
           })
 
+          console.log('[align-merge] Legacy path done, sending all_done')
           send('all_done', {
             totalFiles: extractionData.length,
             totalGroups: allGroups.length,

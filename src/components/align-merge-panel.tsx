@@ -206,8 +206,6 @@ export default function AlignMergePanel() {
     setPhases(basePhases);
     setProgress({ status: 'aligning_merging' });
 
-    const currentPromptSettings = useStore.getState().promptSettings;
-
     const body: Record<string, unknown> = {
       // Use server sessionId for disk-based reading (preferred)
       ...(snapshot.serverSessionId ? { sessionId: snapshot.serverSessionId } : {
@@ -225,10 +223,6 @@ export default function AlignMergePanel() {
       }),
       groups: snapshot.groups.map((g) => ({ groupId: g.groupId, groupKey: g.groupKey })),
       ...(currentColumns.length > 0 ? { columns: currentColumns } : {}),
-      prompts: {
-        merge: currentPromptSettings.merge || undefined,
-        templateAlign: currentPromptSettings.templateAlign || undefined,
-      },
       ...(useStore.getState().apiSettings.baseUrl || useStore.getState().apiSettings.apiKey || useStore.getState().apiSettings.model ? {
         apiSettings: {
           ...useStore.getState().apiSettings,
@@ -484,10 +478,6 @@ export default function AlignMergePanel() {
       groups: snapshot.groups.map((g) => ({ groupId: g.groupId, groupKey: g.groupKey })),
       columns: currentColumns,
       retryGroupIds: [groupId],
-      prompts: {
-        merge: useStore.getState().promptSettings.merge || undefined,
-        templateAlign: useStore.getState().promptSettings.templateAlign || undefined,
-      },
       ...(useStore.getState().apiSettings.baseUrl || useStore.getState().apiSettings.apiKey || useStore.getState().apiSettings.model ? {
         apiSettings: {
           ...useStore.getState().apiSettings,

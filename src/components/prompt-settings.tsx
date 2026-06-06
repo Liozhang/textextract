@@ -24,20 +24,15 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import { Settings, RotateCcw, ChevronDown } from 'lucide-react';
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Settings, RotateCcw } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-
-const PHASES: Array<{ key: keyof PromptSettings; defaultKey: keyof typeof DEFAULT_PROMPTS }> = [
-  { key: 'extraction', defaultKey: 'extraction' },
-  { key: 'merge', defaultKey: 'merge' },
-  { key: 'templateAlign', defaultKey: 'templateAlign' },
-  { key: 'templateGenerate', defaultKey: 'templateGenerate' },
-];
 
 export default function PromptSettings() {
   const t = useT();
@@ -48,41 +43,29 @@ export default function PromptSettings() {
   const setApiSettings = useStore((s) => s.setApiSettings);
   const cacheSettings = useStore((s) => s.cacheSettings);
   const setCacheExpiryHours = useStore((s) => s.setCacheExpiryHours);
-  const documentType = useStore((s) => s.documentType);
-  const setDocumentType = useStore((s) => s.setDocumentType);
-
   const [open, setOpen] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(['extraction']));
+  const [showUnsavedConfirm, setShowUnsavedConfirm] = useState(false);
 
   // Local editing state (synced from store on open)
-  const [localValues, setLocalValues] = useState<PromptSettings>({ ...promptSettings });
+  const [localExtraction, setLocalExtraction] = useState(promptSettings.extraction);
+
+  const isDirty = (localExtraction ?? '') !== (promptSettings.extraction ?? '');
 
   const handleOpen = (isOpen: boolean) => {
+    if (!isOpen && isDirty) {
+      setShowUnsavedConfirm(true);
+      return;
+    }
     setOpen(isOpen);
     if (isOpen) {
-      setLocalValues({ ...promptSettings });
+      setLocalExtraction(promptSettings.extraction);
     }
-  };
-
-  const handleChange = (phase: keyof PromptSettings, value: string) => {
-    setLocalValues((prev) => ({ ...prev, [phase]: value }));
   };
 
   const handleSave = () => {
-    for (const phase of PHASES) {
-      setPromptSettings(phase.key, localValues[phase.key]);
-    }
+    setPromptSettings('extraction', localExtraction);
     setOpen(false);
-  };
-
-  const toggleExpand = (key: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
   };
 
   return (
@@ -95,7 +78,7 @@ export default function PromptSettings() {
         </DialogTrigger>
         <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{t('settings.title')}</DialogTitle>
+            <DialogTitle>{t('settings.dialogTitle')}</DialogTitle>
           </DialogHeader>
 
           {/* ── API Configuration ──────────────────────────────────────── */}
@@ -145,23 +128,18 @@ export default function PromptSettings() {
                 min="1"
                 max="10"
                 value={apiSettings.concurrency || ''}
-                onChange={(e) => setApiSettings({ concurrency: parseInt(e.target.value) || 0 })}
+                onChange={(e) => {
+                  const raw = parseInt(e.target.value);
+                  if (isNaN(raw)) {
+                    setApiSettings({ concurrency: 0 });
+                    return;
+                  }
+                  const clamped = Math.min(10, Math.max(1, raw));
+                  setApiSettings({ concurrency: clamped });
+                }}
                 placeholder="3"
               />
             </div>
-          </div>
-
-          {/* ── Document Type ────────────────────────────────────────── */}
-          <div className="space-y-3 mt-4">
-            <h4 className="text-sm font-semibold">{t('settings.documentType')}</h4>
-            <div className="flex flex-col gap-2">
-              <Input
-                value={documentType}
-                onChange={(e) => setDocumentType(e.target.value)}
-                placeholder={t('settings.documentTypePlaceholder')}
-              />
-            </div>
-            <p className="text-xs text-muted-foreground">{t('settings.documentTypeHint', { defaultValue: 'Helps AI understand document structure for better extraction' })}</p>
           </div>
 
           {/* ── Cache Settings ────────────────────────────────────────── */}
@@ -171,54 +149,39 @@ export default function PromptSettings() {
               <Label htmlFor="cache-expiry" className="text-xs text-muted-foreground">
                 {t('settings.cacheExpiryHours')}
               </Label>
-              <select
-                id="cache-expiry"
-                className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                value={cacheSettings.expiryHours}
-                onChange={(e) => setCacheExpiryHours(Number(e.target.value))}
+              <Select
+                value={String(cacheSettings.expiryHours)}
+                onValueChange={(v) => setCacheExpiryHours(Number(v))}
               >
-                <option value={6}>6 {t('settings.hours')}</option>
-                <option value={12}>12 {t('settings.hours')}</option>
-                <option value={24}>24 {t('settings.hours')}</option>
-                <option value={48}>48 {t('settings.hours')}</option>
-                <option value={72}>72 {t('settings.hours')}</option>
-                <option value={168}>7 {t('settings.days')}</option>
-              </select>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="6">6 {t('settings.hours')}</SelectItem>
+                  <SelectItem value="12">12 {t('settings.hours')}</SelectItem>
+                  <SelectItem value="24">24 {t('settings.hours')}</SelectItem>
+                  <SelectItem value="48">48 {t('settings.hours')}</SelectItem>
+                  <SelectItem value="72">72 {t('settings.hours')}</SelectItem>
+                  <SelectItem value="168">7 {t('settings.days')}</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <p className="text-xs text-muted-foreground">{t('settings.cacheHint')}</p>
           </div>
 
+          {/* ── Extraction Prompt ────────────────────────────────────── */}
           <div className="space-y-3 mt-4">
-            {PHASES.map(({ key, defaultKey }) => (
-              <Collapsible
-                key={key}
-                open={expanded.has(key)}
-                onOpenChange={() => toggleExpand(key)}
-              >
-                <CollapsibleTrigger asChild>
-                  <button className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm font-medium hover:bg-accent transition-colors">
-                    <div className="flex flex-col items-start gap-0.5">
-                      {t(`settings.${key}`)}
-                      {key === 'extraction' && (
-                        <span className="text-xs font-normal text-muted-foreground">{t('settings.extractionHint')}</span>
-                      )}
-                    </div>
-                    <ChevronDown
-                      className={`size-4 transition-transform ${expanded.has(key) ? 'rotate-180' : ''}`}
-                    />
-                  </button>
-                </CollapsibleTrigger>
-                <CollapsibleContent className="pt-2">
-                  <textarea
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-ring"
-                    rows={10}
-                    value={localValues[key] || DEFAULT_PROMPTS[defaultKey]}
-                    onChange={(e) => handleChange(key, e.target.value)}
-                    placeholder={DEFAULT_PROMPTS[defaultKey]}
-                  />
-                </CollapsibleContent>
-              </Collapsible>
-            ))}
+            <div className="flex flex-col gap-0.5">
+              <h4 className="text-sm font-semibold">{t('settings.extraction')}</h4>
+              <span className="text-xs text-muted-foreground">{t('settings.extractionHint')}</span>
+            </div>
+            <textarea
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-ring"
+              rows={10}
+              value={localExtraction || DEFAULT_PROMPTS.extraction}
+              onChange={(e) => setLocalExtraction(e.target.value)}
+              placeholder={DEFAULT_PROMPTS.extraction}
+            />
           </div>
 
           <div className="flex items-center justify-between mt-6">
@@ -251,11 +214,36 @@ export default function PromptSettings() {
             <AlertDialogAction
               onClick={() => {
                 resetPromptSettings();
-                setLocalValues({ extraction: '', merge: '', templateAlign: '', templateGenerate: '' });
+                setLocalExtraction('');
                 setShowResetConfirm(false);
+                setOpen(false);
               }}
             >
               {t('settings.restoreDefaults')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Unsaved changes confirmation */}
+      <AlertDialog open={showUnsavedConfirm} onOpenChange={setShowUnsavedConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('settings.unsavedTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('settings.unsavedDesc')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setShowUnsavedConfirm(false);
+                setLocalExtraction(promptSettings.extraction);
+                setOpen(false);
+              }}
+            >
+              {t('common.confirm')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

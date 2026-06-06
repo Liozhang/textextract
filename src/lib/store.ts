@@ -70,9 +70,6 @@ export interface ExportSettings {
 
 export interface PromptSettings {
   extraction: string;
-  merge: string;
-  templateAlign: string;
-  templateGenerate: string;
 }
 
 export interface ApiSettings {
@@ -206,9 +203,6 @@ const DEFAULT_CACHE_SETTINGS: CacheSettings = {
 
 const DEFAULT_PROMPT_SETTINGS: PromptSettings = {
   extraction: '',
-  merge: '',
-  templateAlign: '',
-  templateGenerate: '',
 };
 
 const DEFAULT_API_SETTINGS: ApiSettings = {
