@@ -338,38 +338,40 @@ export const useStore = create<AppState>()(
       setInterruptedSession: (session) => set({ interruptedSession: session }),
       restoreFromSession: (session) => {
         // Check if session is too old — use configured cache expiry
-        const expiryHours = get().cacheSettings.expiryHours || 24;
-        const ageMs = Date.now() - (session.createdAt ?? 0);
-        const isExpired = ageMs > expiryHours * 60 * 60 * 1000;
-        if (isExpired) {
-          // Don't restore — server temp data is gone
-          set({ interruptedSession: null });
-          return;
-        }
-        set({
-          step: 'extract',
-          files: session.files.map((f) => ({
-            id: f.id,
-            name: f.name,
-            size: f.size,
-            type: f.type,
-            status: 'parsed' as const,
-            sessionId: f.sessionId,
-          })),
-          templateColumns: session.templateColumns ?? [],
-          extractionSnapshot: session.extractionSnapshot,
-          progress: {
-            totalFiles: session.files.length,
-            completedFiles: session.results.length,
-            currentFile: '',
-            status: 'extraction_done',
-          },
-          interruptedSession: null,
-          results: [],
-          mergedExportData: [],
+        set((state) => {
+          const expiryHours = state.cacheSettings.expiryHours || 24;
+          const ageMs = Date.now() - (session.createdAt ?? 0);
+          const isExpired = ageMs > expiryHours * 60 * 60 * 1000;
+          if (isExpired) {
+            return { interruptedSession: null };
+          }
+          return {
+            step: 'extract',
+            files: session.files.map((f) => ({
+              id: f.id,
+              name: f.name,
+              size: f.size,
+              type: f.type,
+              status: 'parsed' as const,
+              sessionId: f.sessionId,
+            })),
+            templateColumns: session.templateColumns ?? [],
+            extractionSnapshot: session.extractionSnapshot,
+            progress: {
+              totalFiles: session.files.length,
+              completedFiles: session.results.length,
+              currentFile: '',
+              status: 'extraction_done',
+            },
+            interruptedSession: null,
+            results: [],
+            mergedExportData: [],
+          };
         });
       },
-      resetAll: () =>
+      resetAll: () => {
+        localStorage.removeItem('ocr-extract-snapshot');
+        localStorage.removeItem('ocr-extract-interrupted');
         set({
           step: 'upload',
           files: [],
@@ -387,7 +389,8 @@ export const useStore = create<AppState>()(
           selectedFileId: null,
           mergedExportData: [],
           interruptedSession: null,
-        }),
+        });
+      },
     }),
     {
       name: 'message-extract-store',
@@ -438,23 +441,20 @@ export const useStore = create<AppState>()(
       onRehydrateStorage: () => (state) => {
         if (!state) return;
         // Try to restore extractionSnapshot from localStorage (survives page refresh)
+        // onRehydrateStorage fires AFTER hydration is complete, so setState is safe here
         try {
           const raw = localStorage.getItem('ocr-extract-snapshot');
           if (raw) {
             const parsed = JSON.parse(raw);
-            // Minimal snapshot: groups + serverSessionId (data re-read from server disk)
-            // or fallback: groups + minimal results metadata
             if (parsed.groups?.length > 0 && (parsed.serverSessionId || parsed.results?.length > 0)) {
-              setTimeout(() => {
-                useStore.setState({
-                  extractionSnapshot: {
-                    results: parsed.results ?? [],
-                    groups: parsed.groups,
-                    serverSessionId: parsed.serverSessionId ?? null,
-                  },
-                  progress: { ...useStore.getState().progress, status: 'extraction_done' },
-                });
-              }, 0);
+              useStore.setState({
+                extractionSnapshot: {
+                  results: parsed.results ?? [],
+                  groups: parsed.groups,
+                  serverSessionId: parsed.serverSessionId ?? null,
+                },
+                progress: { ...state.progress, status: 'extraction_done' },
+              });
             }
           }
         } catch { /* ignore */ }

@@ -654,7 +654,6 @@ export default function ExtractionPanel() {
         try {
           localStorage.setItem('ocr-extract-snapshot', JSON.stringify({
             groups: accumulatedGroups,
-            serverSessionId,
             // Only include serverSessionId path or minimal fallback
             ...(serverSessionId ? { serverSessionId } : {
               results: accumulatedResults.map((r) => ({

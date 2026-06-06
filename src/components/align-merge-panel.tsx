@@ -89,19 +89,6 @@ export default function AlignMergePanel() {
   const hasTemplateColumns = useStore((s) => s.templateColumns.length > 0);
   const mergedExportData = useStore((s) => s.mergedExportData);
 
-  // Restore pipelineRows from mergedExportData when returning after align-merge completed
-  useEffect(() => {
-    if (isDone && pipelineRows.length === 0 && mergedExportData.length > 0) {
-      const restored: PipelineRow[] = mergedExportData.map((row, idx) => ({
-        id: `row-${idx}`,
-        label: row.label,
-        data: row.data,
-        sourceFiles: row.sourceFiles,
-        isMerged: true,
-      }));
-      setPipelineRows(restored);
-    }
-  }, [isDone, mergedExportData]); // eslint-disable-line react-hooks/exhaustive-deps
   const [phases, setPhases] = useState<PipelinePhase[]>(() => {
     if (progress.status === 'done') return [...ALL_DONE_PHASES];
     const base: PipelinePhase[] = [
@@ -115,24 +102,43 @@ export default function AlignMergePanel() {
     return base;
   });
 
+  const hasStarted = useRef(false);
+
   const isAligning = progress.status === 'aligning_merging';
   const isDone = progress.status === 'done';
   const isError = progress.status === 'error';
-  const isStopped = progress.status === 'extraction_done' && pipelineRows.length === 0;
+  const isStopped = progress.status === 'extraction_done' && pipelineRows.length === 0 && hasTemplateColumns && !hasStarted.current;
 
+  const templateColumns = useStore((s) => s.templateColumns);
   const mergedHeaders = useMemo(() => {
     if (schemaHeaders.length > 0) return schemaHeaders;
+    if (templateColumns.length > 0) return templateColumns.map((c) => c.key);
     const headerSet = new Set<string>();
     for (const row of pipelineRows) {
       Object.keys(row.data).forEach((k) => headerSet.add(k));
     }
     return Array.from(headerSet);
-  }, [pipelineRows, schemaHeaders]);
+  }, [pipelineRows, schemaHeaders, templateColumns]);
+
+  // Restore pipelineRows from mergedExportData when returning after align-merge completed
+  useEffect(() => {
+    if (isDone && pipelineRows.length === 0 && mergedExportData.length > 0) {
+      const restored: PipelineRow[] = mergedExportData.map((row, idx) => ({
+        id: `row-${idx}`,
+        label: row.label,
+        data: row.data,
+        sourceFiles: row.sourceFiles,
+        isMerged: true,
+      }));
+      setPipelineRows(restored);
+    }
+  }, [isDone, mergedExportData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (abortRef.current) {
+        intentionalAbortRef.current = true; // Mark as intentional so catch won't reset progress
         abortRef.current.abort();
         abortRef.current = null;
       }
@@ -152,9 +158,10 @@ export default function AlignMergePanel() {
     setSchemaHeaders([]);
     setSchemaAlignFallback(false);
     setPhases([...INIT_PHASES]);
+    setMergedExportData([]);
     setProgress({ status: 'extraction_done' });
     setStep('template');
-  }, [resetTemplate, setProgress, setStep]);
+  }, [resetTemplate, setMergedExportData, setProgress, setStep]);
 
   // ------------------------------------------------------------------
   // Abort
@@ -444,7 +451,6 @@ export default function AlignMergePanel() {
   }, [t, addResult, setMergedExportData, setProgress]);
 
   // Auto-start when component mounts or progress transitions to extraction_done
-  const hasStarted = useRef(false);
   useEffect(() => {
     if (progress.status === 'extraction_done' && !hasStarted.current && useStore.getState().templateColumns.length > 0) {
       hasStarted.current = true;
@@ -491,9 +497,14 @@ export default function AlignMergePanel() {
     };
 
     try {
+      const retryController = new AbortController();
+      if (abortRef.current) abortRef.current.abort();
+      abortRef.current = retryController;
+
       const response = await fetch('/api/align-merge', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: retryController.signal,
         body: JSON.stringify(body),
       });
 
@@ -594,8 +605,9 @@ export default function AlignMergePanel() {
       }
     } finally {
       setRetryingGroupId(null);
+      abortRef.current = null;
     }
-  }, [t, addResult]);
+  }, [t, addResult, setMergedExportData]);
 
   // ------------------------------------------------------------------
   // Render
