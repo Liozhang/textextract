@@ -363,7 +363,8 @@ export async function POST(request: NextRequest) {
                   const data: Record<string, unknown> = { ...mergedHeader }
                   if (templateColumns) {
                     for (const col of templateColumns) {
-                      if (!(col.key in data)) data[col.key] = null
+                      const normColKey = normalizeKey(col.key)
+                      if (!(normColKey in data) && !(col.key in data)) data[col.key] = null
                     }
                   }
                   const fieldConsistency: Record<string, boolean> = {}
@@ -396,7 +397,8 @@ export async function POST(request: NextRequest) {
                     // Fill template columns with null for missing
                     if (templateColumns) {
                       for (const col of templateColumns) {
-                        if (!(col.key in data)) data[col.key] = null
+                        const normColKey = normalizeKey(col.key)
+                        if (!(normColKey in data) && !(col.key in data)) data[col.key] = null
                       }
                     }
 
@@ -497,6 +499,16 @@ export async function POST(request: NextRequest) {
                 }
 
                 const firstImage = groupEntries.find((e) => e.imageDataUrl)?.imageDataUrl
+
+                // Pad template columns with null for missing keys (use normalized match)
+                if (templateColumns) {
+                  for (const col of templateColumns) {
+                    const normColKey = normalizeKey(col.key)
+                    if (!(normColKey in mergedData) && !(col.key in mergedData)) {
+                      mergedData[col.key] = null
+                    }
+                  }
+                }
 
                 rows.push({
                   id: group.groupId,
