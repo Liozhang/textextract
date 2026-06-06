@@ -6,6 +6,7 @@ interface ExportRequestBody {
   format: 'xlsx' | 'csv' | 'json'
   data: Record<string, unknown>[]
   filename?: string
+  columnOrder?: string[]
 }
 
 // ─── buildSheetData ─────────────────────────────────────────────────────────
@@ -16,7 +17,7 @@ interface ExportRequestBody {
  * - Flattens nested objects (key.subkey) and expands arrays into multiple rows
  * - Returns headers and rows where each row corresponds to one header column
  */
-function buildSheetData(data: Record<string, unknown>[]): {
+function buildSheetData(data: Record<string, unknown>[], columnOrder?: string[]): {
   headers: string[]
   rows: string[][]
 } {
@@ -28,7 +29,8 @@ function buildSheetData(data: Record<string, unknown>[]): {
     for (const [key, value] of Object.entries(obj)) {
       const fullKey = prefix ? `${prefix}.${key}` : key
       if (value === null || value === undefined) {
-        continue
+        headersSet.add(fullKey)
+        result[fullKey] = ''
       } else if (typeof value === 'object' && !Array.isArray(value)) {
         const nested = flattenObject(value as Record<string, unknown>, fullKey)
         Object.assign(result, nested)
@@ -48,8 +50,10 @@ function buildSheetData(data: Record<string, unknown>[]): {
     flattenObject(item)
   }
 
-  // Sort headers for consistent column ordering
-  const headers = Array.from(headersSet).sort()
+  // Use client-provided column order, fallback to sorted keys
+  const headers = columnOrder
+    ? [...columnOrder, ...Array.from(headersSet).filter(h => !columnOrder.includes(h))]
+    : Array.from(headersSet).sort()
 
   // Second pass: build rows
   const rows: string[][] = []
@@ -67,7 +71,7 @@ function buildSheetData(data: Record<string, unknown>[]): {
 export async function POST(request: NextRequest) {
   try {
     const body: ExportRequestBody = await request.json()
-    const { format, data, filename } = body
+    const { format, data, filename, columnOrder } = body
 
     if (!format || !data || !Array.isArray(data)) {
       return new Response(
@@ -88,7 +92,7 @@ export async function POST(request: NextRequest) {
     switch (format) {
       case 'xlsx': {
         const XLSX = await import('xlsx')
-        const { headers, rows } = buildSheetData(data)
+        const { headers, rows } = buildSheetData(data, columnOrder)
 
         // First row is headers, rest are data rows
         const sheetData = [headers, ...rows]
@@ -107,7 +111,7 @@ export async function POST(request: NextRequest) {
       }
 
       case 'csv': {
-        const { headers, rows } = buildSheetData(data)
+        const { headers, rows } = buildSheetData(data, columnOrder)
 
         // Build CSV string with proper escaping (including CSV injection prevention)
         const escapeField = (field: string): string => {

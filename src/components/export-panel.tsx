@@ -139,8 +139,12 @@ export default function ExportPanel() {
     return filteredResults.slice(0, 5).map((r) => flattenRow(r.data ?? {}))
   }, [filteredResults])
 
-  // Collect all unique headers for the preview table
+  // Use template column order for headers, fallback to sorted unique keys
+  const templateColumns = useStore((s) => s.templateColumns);
   const previewHeaders = useMemo(() => {
+    if (templateColumns.length > 0) {
+      return templateColumns.map((c) => c.key);
+    }
     const headerSet = new Set<string>()
     for (const row of previewData) {
       for (const key of Object.keys(row)) {
@@ -148,7 +152,7 @@ export default function ExportPanel() {
       }
     }
     return Array.from(headerSet).sort()
-  }, [previewData])
+  }, [previewData, templateColumns])
 
   const hasResults = filteredResults.length > 0
 
@@ -161,9 +165,17 @@ export default function ExportPanel() {
 
     setExporting(true)
     try {
-      // Build the data payload
+      // Build the data payload, ordered by template columns when available
+      const colOrder = templateColumns.length > 0
+        ? templateColumns.map((c) => c.key)
+        : null;
       const payload = filteredResults.map((r) => {
-        const obj: Record<string, unknown> = { ...r.data }
+        const obj: Record<string, unknown> = {}
+        const keys = colOrder ?? Object.keys(r.data ?? {})
+        for (const key of keys) {
+          if (key in (r.data ?? {})) obj[key] = r.data[key]
+          else obj[key] = null
+        }
         return obj
       })
 
@@ -174,6 +186,7 @@ export default function ExportPanel() {
           format: exportFormat,
           data: payload,
           filename: filename || getDefaultFilename(),
+          ...(colOrder ? { columnOrder: colOrder } : {}),
         }),
       })
 
