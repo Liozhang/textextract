@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { RotateCcw, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useStore } from '@/lib/store';
@@ -10,6 +10,7 @@ import type { SessionData } from '@/lib/idb-storage';
 import { Button } from '@/components/ui/button';
 
 function timeAgo(ms: number, t: ReturnType<typeof useT>): string {
+  if (typeof window === 'undefined') return '';
   const seconds = Math.floor((Date.now() - ms) / 1000);
   if (seconds < 60) return t('resume.timeSeconds', { count: seconds });
   const minutes = Math.floor(seconds / 60);
@@ -24,28 +25,29 @@ export default function ResumeBanner() {
   const interruptedSession = useStore((s) => s.interruptedSession);
   const restoreFromSession = useStore((s) => s.restoreFromSession);
   const setInterruptedSession = useStore((s) => s.setInterruptedSession);
-
-  if (!interruptedSession) return null;
-
-  const session = interruptedSession;
-  const completed = session.results.filter((r) => r.success).length;
-  const total = session.files.length;
-  const failed = session.results.filter((r) => !r.success).length;
-
-  const handleResume = () => {
-    localStorage.removeItem('ocr-extract-interrupted');
-    restoreFromSession(session);
-  };
-
   const [discarding, setDiscarding] = useState(false);
 
-  const handleDiscard = async () => {
-    if (discarding) return;
+  const session = interruptedSession;
+  const timeAgoStr = useMemo(
+    () => session ? timeAgo(session.createdAt, t) : '',
+    [session?.createdAt, t],
+  );
+  const completed = session?.results.filter((r) => r.success).length ?? 0;
+  const total = session?.files.length ?? 0;
+  const failed = session?.results.filter((r) => !r.success).length ?? 0;
+
+  const handleResume = useCallback(() => {
+    if (!session) return;
+    localStorage.removeItem('ocr-extract-interrupted');
+    restoreFromSession(session);
+  }, [session, restoreFromSession]);
+
+  const handleDiscard = useCallback(async () => {
+    if (discarding || !session) return;
     setDiscarding(true);
     try {
       await clearSession(session.sessionId);
       localStorage.removeItem('ocr-extract-interrupted');
-      // Clean up server temp files for all session IDs
       const sessionIds = session.sessionIds.length > 0 ? session.sessionIds : [session.sessionId];
       const results = await Promise.allSettled(
         sessionIds.map((sid) =>
@@ -60,7 +62,9 @@ export default function ResumeBanner() {
     } finally {
       setDiscarding(false);
     }
-  };
+  }, [session, discarding, setInterruptedSession, t]);
+
+  if (!session) return null;
 
   return (
     <div className="rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/50 p-3 flex items-center gap-3">
@@ -74,7 +78,7 @@ export default function ResumeBanner() {
             completed,
             total,
             failed,
-            time: timeAgo(session.createdAt, t),
+            time: timeAgoStr,
           })}
         </p>
       </div>

@@ -224,7 +224,8 @@ export const useStore = create<AppState>()(
       setMounted: (value) => set({ mounted: value }),
 
       // --- Locale ---
-      locale: detectLocale(),
+      // SSR-safe: use 'zh' as default, detect actual locale after hydration
+      locale: 'zh' as Locale,
       setLocale: (locale) => set({ locale }),
 
       // --- Wizard ---
@@ -314,7 +315,9 @@ export const useStore = create<AppState>()(
       setExtractionSnapshot: (snapshot) => set({ extractionSnapshot: snapshot }),
       clearExtractionSnapshot: () => {
         set({ extractionSnapshot: null });
-        localStorage.removeItem('ocr-extract-snapshot');
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('ocr-extract-snapshot');
+        }
       },
 
       // --- Merged export data ---
@@ -364,8 +367,10 @@ export const useStore = create<AppState>()(
         });
       },
       resetAll: () => {
-        localStorage.removeItem('ocr-extract-snapshot');
-        localStorage.removeItem('ocr-extract-interrupted');
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('ocr-extract-snapshot');
+          localStorage.removeItem('ocr-extract-interrupted');
+        }
         set({
           step: 'upload',
           files: [],
@@ -433,7 +438,12 @@ export const useStore = create<AppState>()(
         return persisted;
       },
       onRehydrateStorage: () => (state) => {
-        if (!state) return;
+        if (!state || typeof window === 'undefined') return;
+        // Detect locale after hydration (SSR-safe)
+        const detected = detectLocale();
+        if (detected !== state.locale) {
+          useStore.setState({ locale: detected });
+        }
         // Try to restore extractionSnapshot from localStorage (survives page refresh)
         // onRehydrateStorage fires AFTER hydration is complete, so setState is safe here
         try {
