@@ -137,6 +137,7 @@ export default function Home() {
   };
 
   const isStepCompleted = (stepKey: (typeof STEPS)[number]['key']) => {
+    if (stepKey === 'upload') return files.length > 0;
     if (stepKey === 'template') return progress.status === 'template_configured' || progress.status === 'extraction_done' || progress.status === 'done';
     if (stepKey === 'extract') return progress.status === 'extraction_done' || progress.status === 'done';
     if (stepKey === 'align_merge') return progress.status === 'done';

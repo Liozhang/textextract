@@ -195,7 +195,7 @@ const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   format: 'xlsx',
 };
 
-const DEFAULT_DOCUMENT_TYPE = '医疗病理信息系统';
+const DEFAULT_DOCUMENT_TYPE = '';
 
 const DEFAULT_CACHE_SETTINGS: CacheSettings = {
   expiryHours: 24,

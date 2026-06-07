@@ -40,6 +40,20 @@ import {
 } from '@/components/ui/table';
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract groupId from a pipeline row id.
+ * Convention: id is either `groupId` (single row) or `groupId-N` (multi-row, N = numeric index).
+ * Works correctly even when groupId itself contains hyphens (e.g. "patient-report").
+ */
+function groupIdFromId(id: string): string {
+  const match = id.match(/^(.+)-(\d+)$/);
+  return match ? match[1] : id;
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -125,6 +139,7 @@ export default function AlignMergePanel() {
     if (isDone && pipelineRows.length === 0 && mergedExportData.length > 0) {
       const restored: PipelineRow[] = mergedExportData.map((row, idx) => ({
         id: `row-${idx}`,
+        groupId: `row-${idx}`,
         label: row.label,
         data: row.data,
         sourceFiles: row.sourceFiles,
@@ -347,6 +362,7 @@ export default function AlignMergePanel() {
 
             const rows: PipelineRow[] = (parsed.rows ?? []).map((r: any) => ({
               id: r.id ?? '',
+              groupId: r.id ? groupIdFromId(r.id) : '',
               label: r.label ?? '',
               data: r.data ?? {},
               sourceFiles: r.sourceFiles ?? [],
@@ -520,6 +536,7 @@ export default function AlignMergePanel() {
           case 'group_aligned': {
             const newRows: PipelineRow[] = (parsed.rows ?? []).map((r: any) => ({
               id: r.id ?? '',
+              groupId: r.id ? groupIdFromId(r.id) : '',
               label: r.label ?? '',
               data: r.data ?? {},
               sourceFiles: r.sourceFiles ?? [],
@@ -529,7 +546,7 @@ export default function AlignMergePanel() {
             }));
 
             setPipelineRows((prev) => {
-              const other = prev.filter((r) => r.id !== groupId && !r.id.startsWith(groupId + '-'));
+              const other = prev.filter((r) => r.groupId !== groupId);
               return [...other, ...newRows];
             });
             break;
@@ -558,6 +575,7 @@ export default function AlignMergePanel() {
           case 'all_done': {
             const newRows: PipelineRow[] = (parsed.rows ?? []).map((r: any) => ({
               id: r.id ?? '',
+              groupId: r.id ? groupIdFromId(r.id) : '',
               label: r.label ?? '',
               data: r.data ?? {},
               sourceFiles: r.sourceFiles ?? [],
@@ -567,7 +585,7 @@ export default function AlignMergePanel() {
             }));
 
             setPipelineRows((prev) => {
-              const other = prev.filter((r) => r.id !== groupId && !r.id.startsWith(groupId + '-'));
+              const other = prev.filter((r) => r.groupId !== groupId);
               const updated = [...other, ...newRows];
               // Sync mergedExportData so export step uses the latest data
               setMergedExportData(
@@ -737,11 +755,11 @@ export default function AlignMergePanel() {
                                     type="button"
                                     className="ml-0.5 p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                                     title={t('review.retryAlign')}
-                                    onClick={() => handleRetryGroup(row.id.includes('-') ? row.id.split('-')[0] : row.id)}
+                                    onClick={() => handleRetryGroup(row.groupId)}
                                     disabled={retryingGroupId !== null}
                                   >
                                     <RefreshCw
-                                      className={`size-3 ${retryingGroupId === (row.id.includes('-') ? row.id.split('-')[0] : row.id) ? 'animate-spin' : ''}`}
+                                      className={`size-3 ${retryingGroupId === row.groupId ? 'animate-spin' : ''}`}
                                     />
                                   </button>
                                 )}

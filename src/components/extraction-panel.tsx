@@ -78,10 +78,6 @@ export default function ExtractionPanel() {
   const addResult = useStore((s) => s.addResult);
   const setProgress = useStore((s) => s.setProgress);
   const setMergedExportData = useStore((s) => s.setMergedExportData);
-  const promptSettings = useStore((s) => s.promptSettings);
-  const apiSettings = useStore((s) => s.apiSettings);
-  const cacheSettings = useStore((s) => s.cacheSettings);
-  const documentType = useStore((s) => s.documentType);
   const extractionSnapshot = useStore((s) => s.extractionSnapshot);
   const setExtractionSnapshot = useStore((s) => s.setExtractionSnapshot);
   const updateFile = useStore((s) => s.updateFile);
@@ -95,14 +91,18 @@ export default function ExtractionPanel() {
   const [currentBatch, setCurrentBatch] = useState(0);
   const [totalBatches, setTotalBatches] = useState(0);
   const [previewResult, setPreviewResult] = useState<{ fileId: string; fileName: string; data: Record<string, unknown>; entries?: Record<string, unknown>[]; imageDataUrl?: string } | null>(null);
-  // Close preview on Escape key
+  // Close preview on Escape key + lock body scroll when modal is open
   useEffect(() => {
     if (!previewResult) return;
+    document.body.style.overflow = 'hidden';
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setPreviewResult(null);
     };
     document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = '';
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, [previewResult]);
 
   const [hasExtracted, setHasExtracted] = useState(
@@ -327,6 +327,7 @@ export default function ExtractionPanel() {
         const isFirstBatch = batchIdx === 0;
 
         try {
+        const state = useStore.getState();
         const body = {
           files: batchFiles.map((f) => ({
             id: f.id,
@@ -336,20 +337,20 @@ export default function ExtractionPanel() {
             sessionId: f.sessionId,
           })),
           prompts: {
-            extraction: promptSettings.extraction || undefined,
+            extraction: state.promptSettings.extraction || undefined,
           },
-          documentType: documentType || undefined,
-          ...(apiSettings.baseUrl || apiSettings.apiKey || apiSettings.model ? {
+          documentType: state.documentType || undefined,
+          ...(state.apiSettings.baseUrl || state.apiSettings.apiKey || state.apiSettings.model ? {
             apiSettings: {
-              baseUrl: apiSettings.baseUrl || undefined,
-              apiKey: apiSettings.apiKey || undefined,
-              model: apiSettings.model || undefined,
-              concurrency: apiSettings.concurrency || undefined,
-              cacheExpiryHours: cacheSettings.expiryHours || undefined,
+              baseUrl: state.apiSettings.baseUrl || undefined,
+              apiKey: state.apiSettings.apiKey || undefined,
+              model: state.apiSettings.model || undefined,
+              concurrency: state.apiSettings.concurrency || undefined,
+              cacheExpiryHours: state.cacheSettings.expiryHours || undefined,
             },
           } : {}),
-          ...(useStore.getState().templateColumns.length > 0
-            ? { templateColumns: useStore.getState().templateColumns }
+          ...(state.templateColumns.length > 0
+            ? { templateColumns: state.templateColumns }
             : {}),
         };
 
@@ -985,9 +986,12 @@ export default function ExtractionPanel() {
       abortRef.current = null;
     }
     // If retrying failed files, abort should return to extraction_done (preserve results)
-    // If fresh extraction, abort should return to idle
+    // If fresh extraction with partial results (tracked in sessionStateRef), also go to extraction_done
+    // If no results at all, go to idle
     const currentStatus = useStore.getState().progress.status;
-    if (currentStatus === 'extracting' && useStore.getState().extractionSnapshot) {
+    const hasResults = !!useStore.getState().extractionSnapshot
+      || !!sessionStateRef.current?.results?.length;
+    if (currentStatus === 'extracting' && hasResults) {
       setProgress({ status: 'extraction_done', currentFile: '' });
     } else {
       setProgress({ status: 'idle', currentFile: '' });
@@ -1168,7 +1172,7 @@ export default function ExtractionPanel() {
                     <th className="px-2 py-1.5 w-8" />
                     <th className="px-2 py-1.5 w-6" />
                     <th className="px-3 py-1.5">{t('review.fileName')}</th>
-                    <th className="px-3 py-1.5 w-20 text-right">{t('review.fieldsCount', { count: '' })}</th>
+                    <th className="px-3 py-1.5 w-20 text-right">{t('review.fields')}</th>
                     <th className="px-2 py-1.5 w-8" />
                   </tr>
                 </thead>
@@ -1191,6 +1195,7 @@ export default function ExtractionPanel() {
                             });
                           }}
                           className="size-3.5 rounded"
+                          aria-label={r.fileName}
                         />
                       </td>
                       <td className="px-2 py-1.5">
@@ -1240,7 +1245,7 @@ export default function ExtractionPanel() {
                 <Card className="max-w-2xl w-full mx-4 max-h-[85vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                     <CardTitle className="text-base">{previewResult.fileName}</CardTitle>
-                    <button onClick={() => setPreviewResult(null)} className="text-muted-foreground hover:text-foreground rounded-md p-1 hover:bg-muted transition-colors">
+                    <button onClick={() => setPreviewResult(null)} className="text-muted-foreground hover:text-foreground rounded-md p-1 hover:bg-muted transition-colors" aria-label={t('common.cancel')}>
                       <X className="size-4" />
                     </button>
                   </CardHeader>

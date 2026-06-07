@@ -1,20 +1,22 @@
 'use client';
 
+import { useState } from 'react';
 import { RotateCcw, XCircle } from 'lucide-react';
+import { toast } from 'sonner';
 import { useStore } from '@/lib/store';
 import { useT } from '@/lib/i18n';
 import { clearSession } from '@/lib/idb-storage';
 import type { SessionData } from '@/lib/idb-storage';
 import { Button } from '@/components/ui/button';
 
-function timeAgo(ms: number): string {
+function timeAgo(ms: number, t: ReturnType<typeof useT>): string {
   const seconds = Math.floor((Date.now() - ms) / 1000);
-  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 60) return t('resume.timeSeconds', { count: seconds });
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 60) return t('resume.timeMinutes', { count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
+  if (hours < 24) return t('resume.timeHours', { count: hours });
+  return t('resume.timeDays', { count: Math.floor(hours / 24) });
 }
 
 export default function ResumeBanner() {
@@ -35,18 +37,29 @@ export default function ResumeBanner() {
     restoreFromSession(session);
   };
 
+  const [discarding, setDiscarding] = useState(false);
+
   const handleDiscard = async () => {
-    // Clear IndexedDB session
-    await clearSession(session.sessionId);
-    localStorage.removeItem('ocr-extract-interrupted');
-    // Clean up server temp files for all session IDs
-    const sessionIds = session.sessionIds.length > 0 ? session.sessionIds : [session.sessionId];
-    await Promise.allSettled(
-      sessionIds.map((sid) =>
-        fetch(`/api/upload/${sid}`, { method: 'DELETE' }).catch(() => {}),
-      ),
-    );
-    setInterruptedSession(null);
+    if (discarding) return;
+    setDiscarding(true);
+    try {
+      await clearSession(session.sessionId);
+      localStorage.removeItem('ocr-extract-interrupted');
+      // Clean up server temp files for all session IDs
+      const sessionIds = session.sessionIds.length > 0 ? session.sessionIds : [session.sessionId];
+      const results = await Promise.allSettled(
+        sessionIds.map((sid) =>
+          fetch(`/api/upload/${sid}`, { method: 'DELETE' }),
+        ),
+      );
+      const failedCount = results.filter((r) => r.status === 'rejected').length;
+      if (failedCount > 0) {
+        toast.error(t('resume.discardCleanupError', { count: failedCount }));
+      }
+      setInterruptedSession(null);
+    } finally {
+      setDiscarding(false);
+    }
   };
 
   return (
@@ -61,7 +74,7 @@ export default function ResumeBanner() {
             completed,
             total,
             failed,
-            time: timeAgo(session.createdAt),
+            time: timeAgo(session.createdAt, t),
           })}
         </p>
       </div>
@@ -70,9 +83,9 @@ export default function ResumeBanner() {
           <RotateCcw className="size-3.5 mr-1" />
           {t('resume.resumeBtn')}
         </Button>
-        <Button variant="outline" size="sm" onClick={handleDiscard}>
+        <Button variant="outline" size="sm" onClick={handleDiscard} disabled={discarding}>
           <XCircle className="size-3.5 mr-1" />
-          {t('resume.discardBtn')}
+          {discarding ? t('common.loading') : t('resume.discardBtn')}
         </Button>
       </div>
     </div>

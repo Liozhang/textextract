@@ -286,6 +286,12 @@ export default function TemplatePanel({
 
   const updateColumn = useCallback(
     (index: number, partial: Partial<ColumnConstraint>) => {
+      if (partial.key !== undefined && partial.key !== templateColumns[index].key) {
+        const duplicate = templateColumns.some(
+          (c, i) => i !== index && c.key === partial.key,
+        );
+        if (duplicate) return;
+      }
       const updated = templateColumns.map((c, i) =>
         i === index ? { ...c, ...partial } : c,
       );
@@ -309,10 +315,14 @@ export default function TemplatePanel({
   );
 
   const handleConfirm = useCallback(() => {
-    if (templateColumns.length > 0 && onConfirm) {
-      onConfirm();
+    const validColumns = templateColumns.filter((c) => c.key.trim() !== '');
+    if (validColumns.length > 0) {
+      if (validColumns.length !== templateColumns.length) {
+        setTemplateColumns(validColumns);
+      }
+      if (onConfirm) onConfirm();
     }
-  }, [templateColumns, onConfirm]);
+  }, [templateColumns, setTemplateColumns, onConfirm]);
 
   const handleSkip = useCallback(() => {
     if (onSkip) {
@@ -611,7 +621,7 @@ export default function TemplatePanel({
                                   </div>
                                 ))}
                                 {preview.length > 5 && (
-                                  <span className="text-muted-foreground">+{preview.length - 5} more</span>
+                                  <span className="text-muted-foreground">{t('template.moreItems', { count: preview.length - 5 })}</span>
                                 )}
                               </div>
                             ) : (

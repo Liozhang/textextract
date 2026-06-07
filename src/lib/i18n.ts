@@ -74,6 +74,7 @@ const en = {
     presetDesc: 'Select a preset template to get started quickly',
     presetCustom: 'Custom',
     selectPreset: 'Select template...',
+    moreItems: '+{{count}} more',
   },
   upload: {
     title: 'File Upload',
@@ -94,12 +95,19 @@ const en = {
     maxFilesExceeded: 'Maximum {{count}} files, excess files ignored',
     uploadingProgress: 'Uploading {{current}}/{{total}}...',
     chunkFailed: 'Upload chunk failed',
+    uploadFailed: 'Upload failed',
+    chunkFailedDetail: 'Chunk {{current}}/{{total}} failed, {{count}} files skipped',
   },
   resume: {
     title: 'Resume Interrupted Extraction',
     description: '{{completed}} of {{total}} files processed ({{failed}} failed), interrupted {{time}} ago',
     resumeBtn: 'Resume',
     discardBtn: 'Discard',
+    discardCleanupError: 'Failed to clean up {{count}} session(s) on server',
+    timeSeconds: '{{count}}s',
+    timeMinutes: '{{count}}m',
+    timeHours: '{{count}}h',
+    timeDays: '{{count}}d',
   },
   pipeline: {
     grouping: 'Grouping files...',
@@ -137,6 +145,7 @@ const en = {
     fileName: 'File Name',
     field: 'Field',
     value: 'Value',
+    fields: 'Fields',
     fieldsCount: '{{count}} field(s)',
     entriesCount: '{{count}} row(s)',
     failedBadge: 'Failed',
@@ -240,6 +249,7 @@ const en = {
     hours: 'hours',
     days: 'days',
     cacheHint: 'Temp files are cleaned automatically. Changes take effect on next extraction.',
+    discardChanges: 'Discard',
   },
 } satisfies TranslationMap;
 
@@ -319,6 +329,7 @@ const zh: {
     presetDesc: '\u9009\u62E9\u9884\u8BBE\u6A21\u677F\u5FEB\u901F\u5F00\u59CB',
     presetCustom: '\u81EA\u5B9A\u4E49',
     selectPreset: '\u9009\u62E9\u6A21\u677F...',
+    moreItems: '+{{count}} \u66F4\u591A',
   },
   upload: {
     title: '\u6587\u4EF6\u4E0A\u4F20',
@@ -339,12 +350,19 @@ const zh: {
     maxFilesExceeded: '\u6700\u591A {{count}} \u4E2A\u6587\u4EF6\uFF0C\u8D85\u51FA\u90E8\u5206\u5DF2\u5FFD\u7565',
     uploadingProgress: '\u4E0A\u4F20\u4E2D {{current}}/{{total}}...',
     chunkFailed: '\u4E0A\u4F20\u5206\u5757\u5931\u8D25',
+    uploadFailed: '\u4E0A\u4F20\u5931\u8D25',
+    chunkFailedDetail: '\u7B2C {{current}}/{{total}} \u6279\u4E0A\u4F20\u5931\u8D25\uFF0C{{count}} \u4E2A\u6587\u4EF6\u5DF2\u8DF3\u8FC7',
   },
   resume: {
     title: '\u6062\u590D\u4E2D\u65AD\u7684\u63D0\u53D6',
     description: '\u5DF2\u5904\u7406 {{completed}}/{{total}} \u4E2A\u6587\u4EF6\uFF08{{failed}} \u4E2A\u5931\u8D25\uFF09\uFF0C\u4E2D\u65AD\u4E8E {{time}} \u524D',
     resumeBtn: '\u6062\u590D\u63D0\u53D6',
     discardBtn: '\u653E\u5F03',
+    discardCleanupError: '\u6E05\u7406 {{count}} \u4E2A\u670D\u52A1\u5668\u4F1A\u8BDD\u5931\u8D25',
+    timeSeconds: '{{count}}\u79D2',
+    timeMinutes: '{{count}}\u5206\u949F',
+    timeHours: '{{count}}\u5C0F\u65F6',
+    timeDays: '{{count}}\u5929',
   },
   pipeline: {
     grouping: '\u6B63\u5728\u5206\u7EC4\u6587\u4EF6...',
@@ -382,6 +400,7 @@ const zh: {
     fileName: '\u6587\u4EF6\u540D',
     field: '\u5B57\u6BB5\u540D',
     value: '\u503C',
+    fields: '\u5B57\u6BB5',
     fieldsCount: '{{count}} \u4E2A\u5B57\u6BB5',
     entriesCount: '{{count}} \u6761\u8BB0\u5F55',
     failedBadge: '\u5931\u8D25',
@@ -485,6 +504,7 @@ const zh: {
     hours: '\u5C0F\u65F6',
     days: '\u5929',
     cacheHint: '\u4E34\u65F6\u6587\u4EF6\u5C06\u81EA\u52A8\u6E05\u7406\uFF0C\u4FEE\u6539\u540E\u5728\u4E0B\u6B21\u63D0\u53D6\u65F6\u751F\u6565',
+    discardChanges: '\u653E\u5F03\u4FEE\u6539',
   },
 };
 

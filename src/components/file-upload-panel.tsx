@@ -123,7 +123,10 @@ function getStatusBadge(t: ReturnType<typeof useT>, status: AppFile['status']) {
 }
 
 /** Upload a single chunk of files to server */
-async function uploadChunk(files: File[]): Promise<{
+async function uploadChunk(
+  files: File[],
+  t: ReturnType<typeof useT>,
+): Promise<{
   sessionId: string;
   files: Array<{ fileId: string; name: string; size: number; type: string }>;
 } | null> {
@@ -134,8 +137,8 @@ async function uploadChunk(files: File[]): Promise<{
   }
   const res = await fetch('/api/upload', { method: 'POST', body: formData });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Upload failed' }));
-    toast.error(err.error || 'Upload failed');
+    const err = await res.json().catch(() => ({ error: '' }));
+    toast.error(err.error || t('upload.uploadFailed'));
     return null;
   }
   return await res.json();
@@ -145,6 +148,7 @@ async function uploadChunk(files: File[]): Promise<{
 async function uploadFilesChunked(
   rawFiles: File[],
   onProgress: (chunk: number, total: number) => void,
+  t: ReturnType<typeof useT>,
 ): Promise<Array<{
   sessionId: string;
   files: Array<{ fileId: string; name: string; size: number; type: string }>;
@@ -161,11 +165,17 @@ async function uploadFilesChunked(
 
   for (let i = 0; i < chunks.length; i++) {
     onProgress(i + 1, chunks.length);
-    const result = await uploadChunk(chunks[i]);
+    const result = await uploadChunk(chunks[i], t);
     if (result) {
       results.push(result);
     } else {
-      toast.error(`Chunk ${i + 1}/${chunks.length} failed, ${chunks[i].length} files skipped`);
+      toast.error(
+        t('upload.chunkFailedDetail', {
+          current: i + 1,
+          total: chunks.length,
+          count: chunks[i].length,
+        }),
+      );
     }
   }
 
@@ -230,7 +240,7 @@ export default function FileUploadPanel() {
       setUploadProgress(null);
       const chunkResults = await uploadFilesChunked(validFiles, (current, total) => {
         setUploadProgress({ current, total });
-      });
+      }, t);
       setUploading(false);
       setUploadProgress(null);
 

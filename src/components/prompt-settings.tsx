@@ -33,6 +33,7 @@ import {
 import { Settings, RotateCcw } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 
 export default function PromptSettings() {
   const t = useT();
@@ -175,8 +176,8 @@ export default function PromptSettings() {
               <h4 className="text-sm font-semibold">{t('settings.extraction')}</h4>
               <span className="text-xs text-muted-foreground">{t('settings.extractionHint')}</span>
             </div>
-            <textarea
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-ring"
+            <Textarea
+              className="font-mono"
               rows={10}
               value={localExtraction || DEFAULT_PROMPTS.extraction}
               onChange={(e) => setLocalExtraction(e.target.value)}
@@ -243,7 +244,7 @@ export default function PromptSettings() {
                 setOpen(false);
               }}
             >
-              {t('common.confirm')}
+              {t('settings.discardChanges')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

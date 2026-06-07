@@ -38,6 +38,8 @@ import {
 
 export interface PipelineRow {
   id: string;
+  /** Group identifier — the part of `id` before the "-N" index suffix (or the full `id` if no suffix). */
+  groupId: string;
   label: string;
   data: Record<string, unknown>;
   sourceFiles: string[];
