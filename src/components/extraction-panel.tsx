@@ -1226,6 +1226,7 @@ export default function ExtractionPanel() {
                             })}
                             className="text-muted-foreground hover:text-primary transition-colors"
                             title={t('review.preview')}
+                            aria-label={t('review.preview')}
                           >
                             <Eye className="size-3.5" />
                           </button>

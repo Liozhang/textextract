@@ -635,6 +635,7 @@ export default function TemplatePanel({
                             size="icon"
                             className="h-8 w-8 text-destructive hover:text-destructive"
                             onClick={() => removeColumn(idx)}
+                            aria-label={t('template.removeColumn', { name: col.key })}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>

@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -80,6 +81,9 @@ export default function PromptSettings() {
         <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{t('settings.dialogTitle')}</DialogTitle>
+            <DialogDescription className="sr-only">
+              {t('settings.dialogDesc')}
+            </DialogDescription>
           </DialogHeader>
 
           {/* ── API Configuration ──────────────────────────────────────── */}

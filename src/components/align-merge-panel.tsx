@@ -121,6 +121,8 @@ export default function AlignMergePanel() {
   const isAligning = progress.status === 'aligning_merging';
   const isDone = progress.status === 'done';
   const isError = progress.status === 'error';
+  // Detect stale "aligning_merging" status (e.g. after HMR aborted the SSE connection)
+  const isStaleRunning = progress.status === 'aligning_merging' && pipelineRows.length === 0 && !abortRef.current;
   const isStopped = progress.status === 'extraction_done' && pipelineRows.length === 0 && hasTemplateColumns && !hasStarted.current;
 
   const templateColumns = useStore((s) => s.templateColumns);
@@ -461,12 +463,29 @@ export default function AlignMergePanel() {
   }, [t, addResult, setMergedExportData, setProgress]);
 
   // Auto-start when component mounts or progress transitions to extraction_done
+  // Also recover from stale "aligning_merging" status (e.g. after HMR aborted SSE)
   useEffect(() => {
-    if (progress.status === 'extraction_done' && !hasStarted.current && useStore.getState().templateColumns.length > 0) {
-      hasStarted.current = true;
-      handleAlignMerge();
+    // Detect stale state: aligning_merging but no active connection and no results
+    // This happens when HMR aborts the SSE connection mid-flight.
+    // React Fast Refresh preserves ref values, so we must reset hasStarted.
+    if (isStaleRunning) {
+      // Reset to extraction_done so the user can retry via the UI
+      setProgress({ status: 'extraction_done', currentFile: '' });
+      hasStarted.current = false;
+      return; // Don't auto-restart — let the normal flow handle it on next render
     }
-  }, [progress.status]); // eslint-disable-line react-hooks/exhaustive-deps
+    const shouldStart =
+      progress.status === 'extraction_done' &&
+      !hasStarted.current &&
+      useStore.getState().templateColumns.length > 0;
+    if (shouldStart) {
+      const snapshot = useStore.getState().extractionSnapshot;
+      if (snapshot) {
+        hasStarted.current = true;
+        handleAlignMerge();
+      }
+    }
+  }); // eslint-disable-line react-hooks/exhaustive-deps -- intentionally no deps: runs on every render to catch stale state
 
   // ------------------------------------------------------------------
   // Retry single group
@@ -627,18 +646,18 @@ export default function AlignMergePanel() {
           <GitMerge className="size-5" />
           {isDone
             ? t('review.alignMergeComplete')
-            : isAligning
+            : isAligning && !isStaleRunning
               ? t('review.alignMergeInProgress')
               : t('review.alignMergeReady')}
         </CardTitle>
       </CardHeader>
 
       <CardContent className="flex flex-col gap-6">
-        {/* Idle / stopped / error — show start button */}
-        {!isAligning && !isDone && (
+        {/* Idle / stopped / error / stale — show start button */}
+        {(isStaleRunning || !isAligning) && !isDone && (
           <div className="flex flex-col gap-3 items-center py-8">
             <p className="text-sm text-muted-foreground">
-              {isError ? t('review.error') : isStopped ? t('review.alignMergeStopped') : t('review.alignMergeHint')}
+              {isError ? t('review.error') : isStopped || isStaleRunning ? t('review.alignMergeStopped') : t('review.alignMergeHint')}
             </p>
             <div className="flex gap-2">
               <Button onClick={() => {
@@ -646,7 +665,7 @@ export default function AlignMergePanel() {
                 handleAlignMerge();
               }}>
                 <GitMerge className="size-4" />
-                {isError || isStopped ? t('review.retryAlign') : t('review.startAlignMerge')}
+                {isError || isStopped || isStaleRunning ? t('review.retryAlign') : t('review.startAlignMerge')}
               </Button>
               <Button variant="outline" onClick={handleReconfigure}>
                 <RotateCcw className="size-4" />
@@ -656,8 +675,8 @@ export default function AlignMergePanel() {
           </div>
         )}
 
-        {/* Align & Merge in progress */}
-        {isAligning && (
+        {/* Align & Merge in progress (exclude stale state) */}
+        {isAligning && !isStaleRunning && (
           <div className="flex flex-col gap-4">
             <Card>
               <CardContent className="pt-0">
@@ -755,6 +774,7 @@ export default function AlignMergePanel() {
                                     type="button"
                                     className="ml-0.5 p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                                     title={t('review.retryAlign')}
+                                    aria-label={t('review.retryAlign')}
                                     onClick={() => handleRetryGroup(row.groupId)}
                                     disabled={retryingGroupId !== null}
                                   >
