@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { toast } from 'sonner'
 import {
   Table as TableIcon,
@@ -10,6 +10,7 @@ import {
   Loader2,
   ArrowLeft,
   AlertCircle,
+  Columns3,
 } from 'lucide-react'
 import { useStore, type ExportFormat, type MergedExportRow } from '@/lib/store'
 import { useT } from '@/lib/i18n'
@@ -27,6 +28,7 @@ import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Badge } from '@/components/ui/badge'
 import {
   Table,
   TableHeader,
@@ -35,6 +37,12 @@ import {
   TableRow,
   TableCell,
 } from '@/components/ui/table'
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from '@/components/ui/popover'
+import { ScrollArea } from '@/components/ui/scroll-area'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -106,6 +114,10 @@ export default function ExportPanel() {
   const [exporting, setExporting] = useState(false)
   const [onlySuccess, setOnlySuccess] = useState(true)
 
+  // ── Row & Column selection state ──────────────────────────────────────────
+  const [selectedRowIndices, setSelectedRowIndices] = useState<Set<number>>(new Set())
+  const [selectedColumns, setSelectedColumns] = useState<Set<string>>(new Set())
+
   // Format options — inside the component so t() is available for descriptions
   const FORMAT_OPTIONS: FormatOption[] = [
     {
@@ -156,20 +168,41 @@ export default function ExportPanel() {
 
   const hasResults = filteredResults.length > 0
 
+  // ── Auto-select all rows/columns when data changes ───────────────────────
+  useEffect(() => {
+    setSelectedRowIndices(new Set(filteredResults.map((_, i) => i)))
+  }, [filteredResults])
+
+  useEffect(() => {
+    setSelectedColumns(new Set(previewHeaders))
+  }, [previewHeaders])
+
+  // ── Computed export data ─────────────────────────────────────────────────
+  const exportColumns = useMemo(() => {
+    return previewHeaders.filter((h) => selectedColumns.has(h))
+  }, [previewHeaders, selectedColumns])
+
+  const canExport = hasResults && selectedRowIndices.size > 0 && exportColumns.length > 0
+
   // -----------------------------------------------------------------------
   // Export handler
   // -----------------------------------------------------------------------
 
   async function handleExport() {
-    if (!hasResults || exporting) return
+    if (!canExport || exporting) return
 
     setExporting(true)
     try {
-      // Build the data payload, ordered by template columns when available
-      const colOrder = templateColumns.length > 0
-        ? templateColumns.map((c) => c.key)
-        : null;
-      const payload = filteredResults.map((r) => {
+      // Filter rows by selection
+      const selectedRows = Array.from(selectedRowIndices)
+        .map((i) => filteredResults[i])
+        .filter(Boolean)
+
+      // Column order: only selected columns, maintaining template-first order
+      const colOrder = exportColumns.length > 0 ? exportColumns : null
+
+      // Build payload with only selected columns
+      const payload = selectedRows.map((r) => {
         const obj: Record<string, unknown> = {}
         const keys = colOrder ?? Object.keys(r.data ?? {})
         for (const key of keys) {
@@ -209,7 +242,7 @@ export default function ExportPanel() {
       URL.revokeObjectURL(url)
 
       toast.success(t('export.exportSuccess'), {
-        description: t('export.exportSuccessDesc', { count: filteredResults.length }),
+        description: t('export.exportSuccessDesc', { count: selectedRows.length }),
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : t('export.exportRetry')
@@ -285,23 +318,55 @@ export default function ExportPanel() {
           </div>
         </div>
 
-        {/* ── Data preview ─────────────────────────────────────────────── */}
+        {/* ── Data preview with row selection ──────────────────────────── */}
         {hasResults && (
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <Label className="text-sm font-medium">{t('export.preview')}</Label>
-              <span className="text-xs text-muted-foreground">
-                {t('export.dataCount', { count: filteredResults.length })}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">
+                  {t('export.selectedRowsCount', {
+                    count: selectedRowIndices.size,
+                    total: filteredResults.length,
+                  })}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-xs"
+                  onClick={() => {
+                    if (selectedRowIndices.size === filteredResults.length) {
+                      setSelectedRowIndices(new Set())
+                    } else {
+                      setSelectedRowIndices(new Set(filteredResults.map((_, i) => i)))
+                    }
+                  }}
+                >
+                  {selectedRowIndices.size === filteredResults.length
+                    ? t('export.deselectAllRows')
+                    : t('export.selectAllRows')}
+                </Button>
+              </div>
             </div>
 
             <div className="max-h-48 overflow-auto rounded-lg border">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-10 text-center">#</TableHead>
+                    <TableHead className="w-10 text-center">
+                      <Checkbox
+                        checked={selectedRowIndices.size === filteredResults.length && filteredResults.length > 0}
+                        onCheckedChange={(v) => {
+                          if (v) {
+                            setSelectedRowIndices(new Set(filteredResults.map((_, i) => i)))
+                          } else {
+                            setSelectedRowIndices(new Set())
+                          }
+                        }}
+                      />
+                    </TableHead>
                     <TableHead>{t('review.fileName')}</TableHead>
-                    {previewHeaders.map((h) => (
+                    {exportColumns.map((h) => (
                       <TableHead key={h}>{h}</TableHead>
                     ))}
                   </TableRow>
@@ -309,14 +374,27 @@ export default function ExportPanel() {
                 <TableBody>
                   {previewData.length > 0 ? (
                     previewData.map((row, idx) => (
-                      <TableRow key={idx}>
-                        <TableCell className="text-center text-muted-foreground">
-                          {idx + 1}
+                      <TableRow
+                        key={idx}
+                        className={selectedRowIndices.has(idx) ? 'bg-primary/5' : ''}
+                      >
+                        <TableCell className="text-center">
+                          <Checkbox
+                            checked={selectedRowIndices.has(idx)}
+                            onCheckedChange={(v) => {
+                              setSelectedRowIndices((prev) => {
+                                const next = new Set(prev)
+                                if (v) next.add(idx)
+                                else next.delete(idx)
+                                return next
+                              })
+                            }}
+                          />
                         </TableCell>
                         <TableCell className="font-medium">
                           {filteredResults[idx]?.label ?? ''}
                         </TableCell>
-                        {previewHeaders.map((h) => (
+                        {exportColumns.map((h) => (
                           <TableCell key={h} className="max-w-[200px] truncate">
                             {row[h] ?? '-'}
                           </TableCell>
@@ -326,7 +404,7 @@ export default function ExportPanel() {
                   ) : (
                     <TableRow>
                       <TableCell
-                        colSpan={previewHeaders.length + 2}
+                        colSpan={exportColumns.length + 2}
                         className="h-24 text-center text-muted-foreground"
                       >
                         {t('export.noData')}
@@ -339,12 +417,82 @@ export default function ExportPanel() {
           </div>
         )}
 
+        {/* ── Column selection ────────────────────────────────────────── */}
+        {hasResults && previewHeaders.length > 0 && (
+          <div className="flex items-center justify-between">
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 text-xs">
+                  <Columns3 className="size-3.5 mr-1" />
+                  {t('export.selectColumns')}
+                  <Badge variant="secondary" className="ml-1.5 px-1.5 py-0 text-[10px]">
+                    {selectedColumns.size}/{previewHeaders.length}
+                  </Badge>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64 p-0" align="start">
+                <div className="flex items-center justify-between border-b px-3 py-2">
+                  <span className="text-xs font-medium">{t('export.selectColumns')}</span>
+                  <div className="flex gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs px-2"
+                      onClick={() => setSelectedColumns(new Set(previewHeaders))}
+                    >
+                      {t('export.selectAllColumns')}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs px-2"
+                      onClick={() => setSelectedColumns(new Set())}
+                    >
+                      {t('export.deselectAllColumns')}
+                    </Button>
+                  </div>
+                </div>
+                <ScrollArea className="max-h-[300px]">
+                  <div className="px-3 py-1">
+                    {previewHeaders.map((h) => (
+                      <label
+                        key={h}
+                        className="flex items-center gap-2 py-1.5 cursor-pointer hover:bg-muted/50 rounded px-1"
+                      >
+                        <Checkbox
+                          checked={selectedColumns.has(h)}
+                          onCheckedChange={(v) => {
+                            setSelectedColumns((prev) => {
+                              const next = new Set(prev)
+                              if (v) next.add(h)
+                              else next.delete(h)
+                              return next
+                            })
+                          }}
+                        />
+                        <span className="text-sm truncate">{h}</span>
+                      </label>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </PopoverContent>
+            </Popover>
+            {exportColumns.length === 0 && (
+              <span className="text-xs text-destructive">{t('export.noSelection')}</span>
+            )}
+          </div>
+        )}
+
         {/* ── Filter options ─────────────────────────────────────────── */}
         <div className="flex items-center gap-3 rounded-lg border p-4">
           <Checkbox
             id="only-success"
             checked={onlySuccess}
-            onCheckedChange={(v) => setOnlySuccess(v === true)}
+            onCheckedChange={(v) => {
+              setOnlySuccess(v === true)
+              // Reset row selection — useEffect will re-select all from new filteredResults
+              setSelectedRowIndices(new Set())
+            }}
           />
           <Label htmlFor="only-success" className="cursor-pointer">
             {t('export.onlySuccess')}
@@ -356,7 +504,7 @@ export default function ExportPanel() {
         <Button
           size="lg"
           className="w-full"
-          disabled={!hasResults || exporting}
+          disabled={!canExport || exporting}
           onClick={handleExport}
         >
           {exporting ? (
@@ -381,6 +529,12 @@ export default function ExportPanel() {
               <ArrowLeft className="size-4 mr-1" />
               {t('export.goToTemplate')}
             </Button>
+          </div>
+        )}
+        {hasResults && !canExport && (
+          <div className="flex items-center gap-2 text-xs text-destructive">
+            <AlertCircle className="size-3.5" />
+            <span>{t('export.noSelection')}</span>
           </div>
         )}
       </CardFooter>
