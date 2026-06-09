@@ -38,9 +38,19 @@ export default function ResumeBanner() {
 
   const handleResume = useCallback(() => {
     if (!session) return;
+    // Pre-check expiry before restoring
+    const cacheSettings = useStore.getState().cacheSettings;
+    const expiryHours = cacheSettings.expiryHours || 24;
+    const ageMs = Date.now() - (session.createdAt ?? 0);
+    if (ageMs > expiryHours * 60 * 60 * 1000) {
+      toast.warning(t('resume.sessionExpired'));
+      setInterruptedSession(null);
+      clearSession(session.sessionId).catch(() => {});
+      return;
+    }
     localStorage.removeItem('ocr-extract-interrupted');
     restoreFromSession(session);
-  }, [session, restoreFromSession]);
+  }, [session, restoreFromSession, setInterruptedSession, t]);
 
   const handleDiscard = useCallback(async () => {
     if (discarding || !session) return;

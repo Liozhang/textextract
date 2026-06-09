@@ -1,11 +1,12 @@
-import { app, BrowserWindow } from 'electron';
-import { spawn, type ChildProcess } from 'child_process';
+import { app, BrowserWindow, dialog } from 'electron';
 import { join } from 'path';
 import { mkdir } from 'fs/promises';
+import { type Server } from 'http';
 import { tmpdir } from 'os';
 
 let mainWindow: BrowserWindow | null = null;
-let serverProcess: ChildProcess | null = null;
+let httpServer: Server | null = null;
+let isQuitting = false;
 const PORT = 3111;
 const isDev = !app.isPackaged;
 
@@ -16,48 +17,50 @@ function getAppTmpDir(): string {
   return join(tmpdir(), 'ocr-extract');
 }
 
-async function startServer(): Promise<void> {
+function closeServer(): void {
+  if (httpServer) {
+    httpServer.closeAllConnections();
+    httpServer.close();
+    httpServer = null;
+  }
+}
+
+async function startServer(): Promise<boolean> {
   const tmpDir = getAppTmpDir();
   await mkdir(tmpDir, { recursive: true });
 
   if (isDev) {
-    // Dev: just connect to the already-running next dev server
-    return;
+    return true;
   }
 
-  // Production: use Electron's bundled Node to run standalone server
-  const execPath = process.execPath;
-  const serverPath = join(process.resourcesPath, 'standalone', 'server.js');
+  // Production: start Next.js standalone server in-process
+  process.env.NODE_ENV = 'production';
+  process.env.PORT = String(PORT);
+  process.env.HOSTNAME = '127.0.0.1';
+  process.env.ELECTRON_TMPDIR = tmpDir;
+  process.env.NODE_PATH = join(process.resourcesPath, 'standalone', 'node_modules');
 
-  serverProcess = spawn(execPath, [serverPath], {
-    env: {
-      ...process.env,
-      NODE_ENV: 'production',
-      PORT: String(PORT),
-      HOSTNAME: '127.0.0.1',
-      ELECTRON_TMPDIR: tmpDir,
-      NODE_PATH: join(process.resourcesPath, 'standalone', 'node_modules'),
-    },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  serverProcess.stdout?.on('data', (data: Buffer) => {
-    console.log('[server]', data.toString().trimEnd());
-  });
-
-  serverProcess.stderr?.on('data', (data: Buffer) => {
-    console.error('[server]', data.toString().trimEnd());
-  });
-
-  serverProcess.on('error', (err) => {
-    console.error('[server] Failed to start:', err);
-  });
-
-  serverProcess.on('close', (code) => {
-    if (code !== null && code !== 0) {
-      console.error(`[server] Exited with code ${code}`);
+  // Intercept http.createServer to capture the server instance for graceful shutdown
+  const httpModule = require('http');
+  const origCreateServer = httpModule.createServer.bind(httpModule);
+  let captured = false;
+  httpModule.createServer = (...args: unknown[]) => {
+    if (!captured) {
+      captured = true;
+      httpServer = origCreateServer(...args);
+      httpModule.createServer = origCreateServer;
+      return httpServer;
     }
-  });
+    return origCreateServer(...args);
+  };
+
+  try {
+    const serverPath = join(process.resourcesPath, 'standalone', 'server.js');
+    require(serverPath);
+  } catch (err) {
+    console.error('[server] Failed to start:', err);
+    return false;
+  }
 
   // Poll HTTP until server responds or timeout (15s)
   const baseUrl = `http://127.0.0.1:${PORT}`;
@@ -69,14 +72,15 @@ async function startServer(): Promise<void> {
       const res = await fetch(baseUrl, { signal: AbortSignal.timeout(500) });
       if (res.ok) {
         console.log('[server] Ready');
-        return;
+        return true;
       }
     } catch {
       // Not ready yet
     }
     await new Promise((r) => setTimeout(r, interval));
   }
-  console.warn('[server] Timed out waiting for server, proceeding anyway');
+  console.warn('[server] Timed out waiting for server');
+  return false;
 }
 
 function createWindow(): void {
@@ -102,7 +106,37 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  // Handle renderer crash
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[renderer] Crashed:', details);
+    if (!isQuitting) {
+      dialog.showMessageBox({
+        type: 'error',
+        title: 'Message Extract',
+        message: 'The application encountered an error and needs to reload.',
+        buttons: ['Reload', 'Close'],
+      }).then(({ response }) => {
+        if (response === 0) {
+          mainWindow?.webContents.reload();
+        } else {
+          app.quit();
+        }
+      }).catch(() => {
+        app.quit();
+      });
+    }
+  });
 }
+
+// Global error handler
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+  if (!isQuitting && mainWindow) {
+    dialog.showErrorBox('Unexpected Error', `An unexpected error occurred:\n${err.message}`);
+  }
+  app.quit();
+});
 
 // Single instance lock
 const gotTheLock = app.requestSingleInstanceLock();
@@ -117,26 +151,35 @@ if (!gotTheLock) {
   });
 
   app.whenReady().then(async () => {
-    try {
-      await startServer();
-      createWindow();
-    } catch (err) {
-      console.error('Failed to start:', err);
+    const serverReady = await startServer();
+    if (!serverReady) {
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'Message Extract',
+        message: 'Failed to start the application server.',
+        detail: 'The built-in server could not be started. Please try restarting the application.',
+        buttons: ['OK'],
+      });
       app.quit();
+      return;
     }
+    createWindow();
   });
 }
 
 app.on('window-all-closed', () => {
-  if (serverProcess) {
-    serverProcess.kill();
-    serverProcess = null;
-  }
+  closeServer();
   app.quit();
 });
 
+let forceExitTimer: ReturnType<typeof setTimeout> | null = null;
 app.on('before-quit', () => {
-  if (serverProcess) {
-    serverProcess.kill();
+  isQuitting = true;
+  closeServer();
+  // Force-exit as fallback since HTTP server keep-alive may block clean exit
+  if (!forceExitTimer) {
+    forceExitTimer = setTimeout(() => {
+      process.exit(0);
+    }, 1000);
   }
 });

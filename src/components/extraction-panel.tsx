@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useStore } from '@/lib/store';
+import { isApiConfigured } from '@/lib/validate-api';
 import { useT } from '@/lib/i18n';
 import { useExtractionSummary } from '@/lib/hooks/use-extraction-summary';
 import {
@@ -139,8 +140,18 @@ export default function ExtractionPanel() {
   const handleExtract = useCallback(async () => {
     if (isExtracting) return;
 
+    // Pre-check: API settings required for extraction
+    if (!isApiConfigured()) {
+      toast.error(t('review.apiIncomplete'));
+      return;
+    }
+
     const snapshot = useStore.getState().extractionSnapshot;
-    const isResume = !!snapshot && snapshot.results.length > 0;
+    // Only resume if snapshot has results AND at least one fileId still exists in current files
+    const currentFileIds = new Set(files.map((f) => f.id));
+    const hasMatchingResults = !!snapshot && snapshot.results.length > 0
+      && snapshot.results.some((r) => currentFileIds.has(r.fileId));
+    const isResume = hasMatchingResults;
 
     if (!isResume) {
       clearResults();
@@ -340,6 +351,8 @@ export default function ExtractionPanel() {
             extraction: state.promptSettings.extraction || undefined,
           },
           documentType: state.documentType || undefined,
+          // Re-extract: skip server cache when user explicitly restarts
+          force: hasExtracted && !isResume,
           ...(state.apiSettings.baseUrl || state.apiSettings.apiKey || state.apiSettings.model ? {
             apiSettings: {
               baseUrl: state.apiSettings.baseUrl || undefined,
@@ -362,8 +375,19 @@ export default function ExtractionPanel() {
         });
 
         if (!response.ok) {
-          // Mark all files in this batch as failed, continue to next batch
-          const errorMsg = t('review.serverError', { code: response.status, text: response.statusText });
+          // Read actual error message from response body
+          let errorMsg: string;
+          try {
+            const errBody = await response.json();
+            errorMsg = errBody.error || t('review.serverError', { code: response.status, text: response.statusText });
+          } catch {
+            errorMsg = t('review.serverError', { code: response.status, text: response.statusText });
+          }
+          // Fatal errors (4xx config issues) — stop immediately instead of continuing all batches
+          if (response.status >= 400 && response.status < 500) {
+            toast.error(errorMsg, { duration: 8000 });
+            throw new Error(errorMsg);
+          }
           for (const f of batchFiles) {
             addResult({ fileId: f.id, fileName: f.name, success: false, error: errorMsg });
           }
@@ -649,12 +673,18 @@ export default function ExtractionPanel() {
         setEta(null);
         sessionStateRef.current = null; // Clear ref — no need to persist anymore
         localStorage.removeItem('ocr-extract-interrupted');
-        // Persist lightweight snapshot to localStorage (serverSessionId + groups only).
-        // If serverSessionId is available, full data can be re-read from server disk on refresh.
-        // If not, store minimal metadata for recovery.
+        // Persist snapshot to localStorage for refresh recovery.
+        // Includes groups, serverSessionId, templateColumns, and file metadata.
         try {
           localStorage.setItem('ocr-extract-snapshot', JSON.stringify({
             groups: accumulatedGroups,
+            templateColumns: useStore.getState().templateColumns.length > 0
+              ? useStore.getState().templateColumns : undefined,
+            files: accumulatedResults.map((r) => ({
+              id: r.fileId,
+              name: r.fileName,
+              sessionId: serverSessionId ?? null,
+            })),
             // Only include serverSessionId path or minimal fallback
             ...(serverSessionId ? { serverSessionId } : {
               results: accumulatedResults.map((r) => ({
@@ -736,7 +766,10 @@ export default function ExtractionPanel() {
           success: false,
           error: errorMessage,
         });
-        setHasExtracted(true);
+        // Only mark as extracted if some batches actually succeeded
+        if (accumulatedResults.length > 0 && accumulatedResults.some((r) => r.success)) {
+          setHasExtracted(true);
+        }
       }
     } finally {
       abortRef.current = null;
@@ -748,6 +781,7 @@ export default function ExtractionPanel() {
   }, [
     files,
     isExtracting,
+    hasExtracted,
     clearResults,
     setProgress,
     addResult,
@@ -957,6 +991,8 @@ export default function ExtractionPanel() {
       if (err instanceof Error && err.name === 'AbortError') {
         // no-op — handleAbort sets state
       } else {
+        const errorMessage = err instanceof Error ? err.message : t('review.unknownError');
+        toast.error(t('review.retryError', { error: errorMessage }));
         setProgress({ status: 'extraction_done', currentFile: '' });
       }
       setPhases((prev) =>
@@ -1029,7 +1065,7 @@ export default function ExtractionPanel() {
             <Button
               size="lg"
               disabled={!canStart}
-              onClick={handleExtract}
+              onClick={() => handleExtract()}
             >
               {hasExtracted ? (
                 <>
@@ -1093,7 +1129,7 @@ export default function ExtractionPanel() {
           <div className="flex items-center gap-3 text-sm text-destructive">
             <XCircle className="size-4 shrink-0" />
             {t('review.error')}
-            <Button variant="outline" size="sm" onClick={handleExtract} disabled={!canStart}>
+            <Button variant="outline" size="sm" onClick={handleRetryFailed} disabled={!canStart}>
               <RotateCcw className="size-3 mr-1" />
               {t('review.restart')}
             </Button>

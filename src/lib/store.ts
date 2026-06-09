@@ -34,6 +34,7 @@ export interface AppFile {
 
 export interface MergedExportRow {
   label: string;
+  groupId: string;
   data: Record<string, unknown>;
   sourceFiles: string[];
   success: boolean;
@@ -444,7 +445,7 @@ export const useStore = create<AppState>()(
         if (detected !== state.locale) {
           useStore.setState({ locale: detected });
         }
-        // Try to restore extractionSnapshot from localStorage (survives page refresh)
+        // Try to restore extraction state from localStorage (survives page refresh)
         // onRehydrateStorage fires AFTER hydration is complete, so setState is safe here
         try {
           const raw = localStorage.getItem('ocr-extract-snapshot');
@@ -452,16 +453,50 @@ export const useStore = create<AppState>()(
             const parsed = JSON.parse(raw);
             if (parsed.groups?.length > 0 && (parsed.serverSessionId || parsed.results?.length > 0)) {
               useStore.setState({
+                step: 'align_merge' as const,
                 extractionSnapshot: {
                   results: parsed.results ?? [],
                   groups: parsed.groups,
                   serverSessionId: parsed.serverSessionId ?? null,
                 },
-                progress: { ...state.progress, status: 'extraction_done' },
+                progress: { totalFiles: parsed.files?.length ?? 0, completedFiles: parsed.files?.length ?? 0, currentFile: '', status: 'extraction_done' as const },
+                ...(parsed.templateColumns ? { templateColumns: parsed.templateColumns } : {}),
+                ...(parsed.files ? {
+                  files: parsed.files.map((f: { id: string; name: string; sessionId?: string | null }) => ({
+                    id: f.id,
+                    name: f.name,
+                    size: 0,
+                    type: '',
+                    status: 'parsed' as const,
+                    sessionId: f.sessionId ?? '',
+                  })),
+                } : {}),
               });
             }
           }
         } catch { /* ignore */ }
+
+        // Auto-load server-side default API settings if client has none configured
+        // NEVER auto-load apiKey — it's masked ("sk-1***") and only meant for server-side use
+        const current = useStore.getState();
+        if (!current.apiSettings.baseUrl && !current.apiSettings.apiKey && !current.apiSettings.model) {
+          fetch('/api/settings').then((r) => r.json()).then((defaults) => {
+            // Re-check: user may have configured settings while fetch was in-flight
+            const now = useStore.getState();
+            if (!now.apiSettings.baseUrl && !now.apiSettings.apiKey && !now.apiSettings.model) {
+              if (defaults.baseUrl || defaults.model) {
+                useStore.setState({
+                  apiSettings: {
+                    baseUrl: defaults.baseUrl || '',
+                    apiKey: '',  // never auto-populate from masked server response
+                    model: defaults.model || '',
+                    concurrency: defaults.concurrency || 0,
+                  },
+                });
+              }
+            }
+          }).catch(() => { /* offline or server not available */ });
+        }
       },
     },
   ),

@@ -175,7 +175,7 @@ export async function POST(request: NextRequest) {
 
     // Fire-and-forget: clean up expired temp sessions (use client-provided expiry)
     cleanupExpiredSessions(
-      apiSettings.cacheExpiryHours ? apiSettings.cacheExpiryHours * 60 * 60 * 1000 : undefined,
+      apiSettings?.cacheExpiryHours ? apiSettings.cacheExpiryHours * 60 * 60 * 1000 : undefined,
     )
 
     // API settings only required for legacy path (AI calls)
@@ -552,8 +552,15 @@ export async function POST(request: NextRequest) {
           send('phase', { phase: 'merging' })
           send('schema_ready', { headers: outputHeaders, totalRows: extractionData.filter((r) => r.success).length })
 
+          if (!apiSettings || !openai) {
+            send('error', { message: 'API settings required but not available' })
+            controller.close()
+            return
+          }
+          const settings = apiSettings
+          const client = openai
           const mergedRecords: MergedRecord[] = []
-          const mergeConcurrency = apiSettings.concurrency
+          const mergeConcurrency = settings.concurrency
 
           await workerPool(groups, mergeConcurrency, async (group) => {
             const groupResults = extractionData.filter((r) => r.groupId === group.groupId)
@@ -567,8 +574,8 @@ export async function POST(request: NextRequest) {
 
             try {
               const groupRecords = await mergeGroupWithFallback(
-                openai,
-                apiSettings.model,
+                client,
+                settings.model,
                 group,
                 groupResults,
                 AbortSignal.any([abortController.signal, AbortSignal.timeout(perCallTimeout)]),
@@ -617,8 +624,8 @@ export async function POST(request: NextRequest) {
 
               try {
                 const aligned = await alignToTemplateWithAI(
-                  openai,
-                  apiSettings.model,
+                  client,
+                  settings.model,
                   group.groupKey,
                   group.groupId,
                   groupMerged,

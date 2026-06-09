@@ -73,6 +73,8 @@ interface ExtractRequestBody {
   files: FileInput[]
   imageCompressThreshold?: number
   documentType?: string
+  /** When true, skip cached results and re-extract all files */
+  force?: boolean
   prompts?: {
     extraction?: string
   }
@@ -257,6 +259,7 @@ export async function POST(request: NextRequest) {
       prompts: customPrompts,
       templateColumns,
       documentType,
+      force = false,
     } = body
 
     // Resolve prompt: schema-guided or legacy
@@ -375,8 +378,8 @@ export async function POST(request: NextRequest) {
 
             send('file_start', { fileId, fileName, groupId: groupId })
 
-            // Check for cached result — skip AI call if already extracted
-            const cached = await resultExists(resultSessionId, fileId)
+            // Check for cached result — skip AI call if already extracted (unless force)
+            const cached = force ? null : await resultExists(resultSessionId, fileId)
             if (cached) {
               fileMeta.push({ fileId, fileName, groupId: groupId, success: true })
               send('file_complete', {
