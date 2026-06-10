@@ -491,7 +491,7 @@ export default function ExportPanel() {
                         </TableHead>
                         <TableHead>{t('review.fileName')}</TableHead>
                         {exportColumns.map((h) => (
-                          <TableHead key={h}>{h}</TableHead>
+                          <TableHead key={h} className="whitespace-nowrap truncate max-w-[200px]" title={h}>{h}</TableHead>
                         ))}
                       </TableRow>
                     </TableHeader>
@@ -519,7 +519,7 @@ export default function ExportPanel() {
                               {filteredResults[idx]?.label ?? ''}
                             </TableCell>
                             {exportColumns.map((h) => (
-                              <TableCell key={h} className="max-w-[200px] truncate">
+                              <TableCell key={h} className="max-w-[280px] truncate">
                                 {row[h] ?? '-'}
                               </TableCell>
                             ))}
@@ -580,7 +580,7 @@ export default function ExportPanel() {
                                   })
                                 }}
                               />
-                              <span className="text-sm truncate">{h}</span>
+                              <span className="text-sm truncate" title={h}>{h}</span>
                             </label>
                           ))}
                         </div>
@@ -664,10 +664,12 @@ export default function ExportPanel() {
                               <Label className="text-[10px] text-muted-foreground">{t('export.pivotValueColumns')}</Label>
                               <Popover>
                                 <PopoverTrigger asChild>
-                                  <Button variant="outline" size="sm" className="w-full mt-0.5 h-8 text-xs justify-start">
-                                    {autoValues.length > 0
-                                      ? autoValues.join(', ')
-                                      : t('export.pivotValueColumnsDesc')}
+                                  <Button variant="outline" size="sm" className="w-full mt-0.5 h-8 text-xs justify-start gap-1">
+                                    <span className="truncate min-w-0 flex-1 text-left">
+                                      {autoValues.length > 0
+                                        ? autoValues.join(', ')
+                                        : t('export.pivotValueColumnsDesc')}
+                                    </span>
                                     <Badge variant="secondary" className="ml-auto px-1.5 py-0 text-[10px]">
                                       {autoValues.length}/{repeatingCols.filter(c => c !== preset.prefixColumn && c !== preset.pivotKeyColumn).length}
                                     </Badge>
@@ -696,7 +698,7 @@ export default function ExportPanel() {
                                               updatePreset(preset.id, { valueColumns: next })
                                             }}
                                           />
-                                          <span className="text-sm truncate">{col}</span>
+                                          <span className="text-sm truncate" title={col}>{col}</span>
                                         </label>
                                       ))}
                                     </div>
@@ -736,7 +738,7 @@ export default function ExportPanel() {
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {pivotResult.columns.map((col) => (
                           <div key={col} className="flex items-center gap-2">
-                            <span className="text-xs text-muted-foreground w-36 shrink-0 truncate" title={col}>
+                            <span className="text-xs text-muted-foreground w-44 shrink-0 truncate" title={col}>
                               {col}
                             </span>
                             <Input
@@ -776,7 +778,7 @@ export default function ExportPanel() {
                           <TableRow>
                             <TableHead className="w-32">{t('review.fileName')}</TableHead>
                             {pivotResult.columns.map((col) => (
-                              <TableHead key={col} className="min-w-[100px] whitespace-nowrap">
+                              <TableHead key={col} className="min-w-[120px] max-w-[240px] whitespace-nowrap truncate" title={columnNameMap[col] ?? col}>
                                 {columnNameMap[col] ?? col}
                               </TableHead>
                             ))}
@@ -789,7 +791,7 @@ export default function ExportPanel() {
                                 {String(row._label ?? '')}
                               </TableCell>
                               {pivotResult.columns.map((col) => (
-                                <TableCell key={col} className="max-w-[150px] truncate">
+                                <TableCell key={col} className="max-w-[220px] truncate">
                                   {row[col] != null ? String(row[col]) : '-'}
                                 </TableCell>
                               ))}

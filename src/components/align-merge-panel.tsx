@@ -12,7 +12,9 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { useStore } from '@/lib/store';
+import { isApiConfigured } from '@/lib/validate-api';
 import { useT } from '@/lib/i18n';
+import { toast } from 'sonner';
 import {
   PipelinePhase,
   PipelineRow,
@@ -140,8 +142,8 @@ export default function AlignMergePanel() {
   useEffect(() => {
     if (isDone && pipelineRows.length === 0 && mergedExportData.length > 0) {
       const restored: PipelineRow[] = mergedExportData.map((row, idx) => ({
-        id: `row-${idx}`,
-        groupId: `row-${idx}`,
+        id: row.groupId || `row-${idx}`,
+        groupId: row.groupId || `row-${idx}`,
         label: row.label,
         data: row.data,
         sourceFiles: row.sourceFiles,
@@ -204,6 +206,17 @@ export default function AlignMergePanel() {
   const handleAlignMerge = useCallback(async () => {
     const snapshot = useStore.getState().extractionSnapshot;
     if (!snapshot) return;
+
+    // Pre-check: API settings required for legacy path (no schema entries)
+    const hasSchemaEntries = snapshot.results.some(
+      (r) => r.success && ((r.entries && r.entries.length > 0) || (r.data && Object.keys(r.data).length > 0)),
+    );
+    if (!hasSchemaEntries) {
+      if (!isApiConfigured()) {
+        toast.error(t('review.apiIncomplete'));
+        return;
+      }
+    }
 
     setPipelineRows([]);
     setSchemaHeaders([]);
@@ -377,6 +390,7 @@ export default function AlignMergePanel() {
             setMergedExportData(
               rows.map((row) => ({
                 label: row.label,
+                groupId: row.groupId,
                 data: row.data,
                 sourceFiles: row.sourceFiles,
                 success: true,
@@ -423,6 +437,7 @@ export default function AlignMergePanel() {
           setMergedExportData(
             currentRows.map((row) => ({
               label: row.label,
+              groupId: row.groupId,
               data: row.data,
               sourceFiles: row.sourceFiles,
               success: true,
@@ -610,6 +625,7 @@ export default function AlignMergePanel() {
               setMergedExportData(
                 updated.map((row) => ({
                   label: row.label,
+                  groupId: row.groupId,
                   data: row.data,
                   sourceFiles: row.sourceFiles,
                   success: true,
@@ -744,9 +760,9 @@ export default function AlignMergePanel() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="w-36">{t('review.fileName')}</TableHead>
+                        <TableHead className="w-48">{t('review.fileName')}</TableHead>
                         {mergedHeaders.map((h) => (
-                          <TableHead key={h}>{h}</TableHead>
+                          <TableHead key={h} className="whitespace-nowrap truncate max-w-[200px]" title={h}>{h}</TableHead>
                         ))}
                       </TableRow>
                     </TableHeader>
@@ -766,7 +782,7 @@ export default function AlignMergePanel() {
                                 {row.isMerged && (
                                   <GitMerge className="size-3.5 text-amber-500" />
                                 )}
-                                <span className="truncate max-w-[100px]">
+                                <span className="truncate max-w-[180px]" title={row.label}>
                                   {row.label}
                                 </span>
                                 {hasTemplateColumns && (
@@ -785,7 +801,7 @@ export default function AlignMergePanel() {
                                 )}
                               </div>
                               {row.isMerged && row.sourceFiles.length > 1 && (
-                                <div className="text-[10px] text-muted-foreground mt-0.5 max-w-[140px] truncate">
+                                <div className="text-[10px] text-muted-foreground mt-0.5 max-w-[220px] truncate" title={row.sourceFiles.join(', ')}>
                                   {row.sourceFiles.join(', ')}
                                 </div>
                               )}
@@ -800,7 +816,7 @@ export default function AlignMergePanel() {
                                   className={isInconsistent ? 'bg-amber-100 dark:bg-amber-900/20' : ''}
                                 >
                                   <div className="flex items-center gap-1">
-                                    <span className="max-w-[150px] truncate">
+                                    <span className="max-w-[260px] truncate" title={typeof value === 'string' ? value : String(value ?? '')}>
                                       {renderFieldValue(value)}
                                     </span>
                                   </div>

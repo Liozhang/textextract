@@ -183,11 +183,11 @@ export default function Home() {
               const clickable = (idx <= currentStepIndex || isStepCompleted(s.key)) && !isPipelineActive;
 
               return (
-                <div key={s.key} className="flex items-center flex-1 last:flex-none">
+                <div key={s.key} className="flex items-center flex-1 min-w-0 last:flex-none">
                   <button
                     onClick={() => clickable && setStep(s.key as typeof step)}
                     disabled={!clickable}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all min-w-0 ${
                       isActive
                         ? 'bg-primary text-primary-foreground shadow-md'
                         : completed
@@ -200,7 +200,7 @@ export default function Home() {
                     ) : (
                       <Icon className="h-4 w-4" />
                     )}
-                    <span className="text-sm font-medium hidden sm:inline">
+                    <span className="text-sm font-medium hidden sm:inline truncate">
                       {t('steps.' + s.key)}
                     </span>
                   </button>

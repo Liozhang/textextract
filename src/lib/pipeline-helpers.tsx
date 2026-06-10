@@ -162,7 +162,7 @@ const PHASE_META: Record<string, { icon: typeof FolderTree; labelKey: string }> 
 export function PhaseIndicator({ phases }: { phases: PipelinePhase[] }) {
   const t = useT();
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1 flex-wrap">
       {phases.map((phase, idx) => {
         const meta = PHASE_META[phase.key] ?? PHASE_META.extracting;
         const Icon = meta.icon;
@@ -189,7 +189,7 @@ export function PhaseIndicator({ phases }: { phases: PipelinePhase[] }) {
               )}
               <span>{t(meta.labelKey)}</span>
               {phase.detail && (
-                <span className="opacity-70 ml-0.5">
+                <span className="opacity-70 ml-0.5 truncate max-w-[8rem]">
                   {phase.detail}
                 </span>
               )}
@@ -231,7 +231,7 @@ export function PipelineResultCard({ row, headers }: PipelineResultCardProps) {
             <ChevronRight className="size-4" />
           )}
           <CheckCircle2 className="text-emerald-600 size-4" />
-          {row.label}
+          <span className="truncate min-w-0" title={row.label}>{row.label}</span>
           {row.isMerged && (() => {
             const { label, isFallback } = formatMergeMethod(row.mergeMethod, t);
             return (
@@ -251,7 +251,7 @@ export function PipelineResultCard({ row, headers }: PipelineResultCardProps) {
           <CardContent className="pt-0">
             <div className="flex flex-col gap-4">
               {row.isMerged && row.sourceFiles.length > 0 && (
-                <div className="text-xs text-muted-foreground">
+                <div className="text-xs text-muted-foreground truncate max-w-full" title={row.sourceFiles.join(', ')}>
                   {row.sourceFiles.join(', ')}
                 </div>
               )}
@@ -269,10 +269,10 @@ export function PipelineResultCard({ row, headers }: PipelineResultCardProps) {
                       const isInconsistent = row.fieldConsistency?.[key] === false;
                       return (
                         <TableRow key={key}>
-                          <TableCell className={`font-medium ${isInconsistent ? 'bg-amber-100 dark:bg-amber-900/20' : ''}`}>
+                          <TableCell className={`font-medium truncate max-w-[10rem] ${isInconsistent ? 'bg-amber-100 dark:bg-amber-900/20' : ''}`} title={key}>
                             {key}
                           </TableCell>
-                          <TableCell className={isInconsistent ? 'bg-amber-100 dark:bg-amber-900/20' : ''}>
+                          <TableCell className={`truncate max-w-[20rem] ${isInconsistent ? 'bg-amber-100 dark:bg-amber-900/20' : ''}`} title={renderFieldValue(value)}>
                             {renderFieldValue(value)}
                           </TableCell>
                         </TableRow>

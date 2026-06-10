@@ -482,9 +482,10 @@ export default function TemplatePanel({
                   <Badge
                     key={key}
                     variant={isSelected ? 'default' : 'outline'}
-                    className={`cursor-pointer select-none text-xs transition-colors ${
+                    className={`cursor-pointer select-none text-xs transition-colors max-w-[200px] truncate ${
                       alreadyInTemplate ? 'opacity-40 pointer-events-none' : ''
                     }`}
+                    title={key}
                     onClick={() => !alreadyInTemplate && toggleKey(key)}
                   >
                     {isSelected && <CheckCircle2 className="size-3 mr-1" />}
@@ -531,16 +532,16 @@ export default function TemplatePanel({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
-                    <th className="pb-2 pr-2 min-w-[160px]">{t('template.key')}</th>
+                    <th className="pb-2 pr-2 min-w-[200px]">{t('template.key')}</th>
                     <th className="pb-2 pr-2 w-[100px]">{t('template.type')}</th>
-                    <th className="pb-2 pr-2 min-w-[200px]">{t('template.desc')}</th>
-                    <th className="pb-2 pr-2 min-w-[120px]">{t('template.example')}</th>
+                    <th className="pb-2 pr-2 min-w-[260px]">{t('template.desc')}</th>
+                    <th className="pb-2 pr-2 min-w-[160px]">{t('template.example')}</th>
                     <th className="pb-2 pr-2 w-[60px]" title={t('template.repeatingHint')}>
                       {t('template.repeating')}
                     </th>
                     {/* Value preview column: only in embedded mode with data */}
                     {embedded && extractionData && extractionData.length > 0 && (
-                      <th className="pb-2 pr-2 min-w-[200px]">
+                      <th className="pb-2 pr-2 min-w-[240px]">
                         {t('template.valuePreview', { count: previewFileCount })}
                       </th>
                     )}
@@ -613,10 +614,10 @@ export default function TemplatePanel({
                         {embedded && extractionData && extractionData.length > 0 && (
                           <td className="py-1.5 pr-2">
                             {preview && preview.length > 0 ? (
-                              <div className="flex flex-col gap-0.5 max-h-[60px] overflow-y-auto text-xs">
+                              <div className="flex flex-col gap-0.5 max-h-[120px] overflow-y-auto text-xs">
                                 {preview.slice(0, 5).map((entry, i) => (
-                                  <div key={i} className="flex gap-1 truncate" title={`${entry.fileName}: ${String(entry.value)}`}>
-                                    <span className="text-muted-foreground shrink-0">{entry.fileName}:</span>
+                                  <div key={i} className="flex gap-1 min-w-0" title={`${entry.fileName}: ${String(entry.value)}`}>
+                                    <span className="text-muted-foreground shrink-0 truncate max-w-[120px]">{entry.fileName}:</span>
                                     <span className="truncate">{entry.value != null ? String(entry.value) : t('template.noValue')}</span>
                                   </div>
                                 ))}

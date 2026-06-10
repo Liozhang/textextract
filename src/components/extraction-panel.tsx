@@ -1242,9 +1242,9 @@ export default function ExtractionPanel() {
                         )}
                       </td>
                       <td className="px-3 py-1.5">
-                        <span className="truncate max-w-[240px] block">{r.fileName}</span>
+                        <span className="truncate max-w-[320px] block" title={r.fileName}>{r.fileName}</span>
                         {r.error && (
-                          <span className="text-[10px] text-destructive block truncate max-w-[240px]">{r.error}</span>
+                          <span className="text-[10px] text-destructive block truncate max-w-[320px]" title={r.error}>{r.error}</span>
                         )}
                       </td>
                       <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">
@@ -1310,7 +1310,7 @@ export default function ExtractionPanel() {
                               <tr className="border-b bg-muted/50 text-left text-muted-foreground">
                                 <th className="px-2 py-1.5 w-8">#</th>
                                 {Object.keys(previewResult.entries[0]).map((col) => (
-                                  <th key={col} className="px-2 py-1.5">{col}</th>
+                                  <th key={col} className="px-2 py-1.5 whitespace-nowrap truncate max-w-[160px]" title={col}>{col}</th>
                                 ))}
                               </tr>
                             </thead>
@@ -1337,7 +1337,7 @@ export default function ExtractionPanel() {
                         <div className="max-h-[300px] overflow-auto rounded-md border p-2">
                           {Object.entries(previewResult.data).map(([key, value]) => (
                             <div key={key} className="flex gap-2 text-sm py-0.5 border-b border-muted/30 last:border-0">
-                              <span className="font-medium text-muted-foreground shrink-0 min-w-[120px]">{key}</span>
+                              <span className="font-medium text-muted-foreground shrink-0 min-w-[160px]">{key}</span>
                               <span className="break-all">
                                 {typeof value === 'string' ? value : JSON.stringify(value)}
                               </span>
