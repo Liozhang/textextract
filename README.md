@@ -2,7 +2,7 @@
   <h1 align="center">TextExtract</h1>
   <p align="center">
     <strong>AI-Powered Document OCR Extraction Tool</strong><br/>
-    Extract structured data from images, PDFs, DOCX, XLSX, and more with AI vision models.
+    Extract structured data from images and plain text files with AI vision models.
   </p>
 </p>
 
@@ -18,8 +18,8 @@
 
 ## Features
 
-- **Multi-format Support** — Images (PNG, JPG, BMP, TIFF, WebP, GIF), PDF, DOCX, XLSX, CSV, TXT, Markdown
-- **AI Extraction** — Images processed by multimodal vision models; text-based files (PDF, DOCX, XLSX) parsed and sent as text context
+- **Multi-format Support** — Images (PNG, JPG, BMP, TIFF, WebP, GIF), plain text (TXT, Markdown)
+- **AI Extraction** — Images processed by multimodal vision models; text files sent as text context
 - **5-Step Wizard** — Upload → Template → Extract → Align & Merge → Export
 - **Smart Grouping** — Automatically groups files by naming patterns (patient ID, date, etc.)
 - **Template System** — Define output columns with AI-assisted template generation, preset templates included
@@ -108,7 +108,7 @@ API_MODEL=step-3.7-flash
 
 ### 5-Step Workflow
 
-1. **Upload Files** — Drag & drop or click to upload documents. Supports up to 500 files, 100MB each.
+1. **Upload Files** — Drag & drop or click to upload images or plain text files. Supports up to 500 files, 100MB each.
 
 2. **Configure Template** — Define which fields to extract. Use presets, paste headers, type manually, or let AI generate a template from your description.
 
@@ -143,7 +143,7 @@ Output: `dist-electron/output/Message Extract Setup 0.2.0.exe`
 | UI | React 19, Tailwind CSS 4, Radix UI |
 | State | Zustand 5 with persistence |
 | AI | OpenAI SDK (compatible with any multimodal API) |
-| File Parsing | mammoth (DOCX), pdf-parse (PDF), sharp (images) |
+| File Parsing | sharp (image compression) |
 | Export | SheetJS (XLSX/CSV) |
 | Desktop | Electron 42 |
 | Language | TypeScript 5 |

@@ -2,7 +2,7 @@
   <h1 align="center">TextExtract</h1>
   <p align="center">
     <strong>AI 驱动的文档智能提取工具</strong><br/>
-    利用多模态大模型，从图片、PDF、Word 等文档中提取结构化数据。
+    利用多模态大模型，从图片和纯文本文件中提取结构化数据。
   </p>
 </p>
 
@@ -20,8 +20,8 @@
 
 ## 功能特性
 
-- **多格式支持** — 图片（PNG、JPG、BMP、TIFF、WebP、GIF）、PDF、DOCX、XLSX、CSV、TXT、Markdown
-- **AI 智能提取** — 图片通过多模态视觉模型识别；文本类文件（PDF、DOCX、XLSX）解析后作为文本上下文发送
+- **多格式支持** — 图片（PNG、JPG、BMP、TIFF、WebP、GIF），纯文本（TXT、Markdown）
+- **AI 智能提取** — 图片通过多模态视觉模型识别；文本类文件作为文本上下文发送
 - **5 步向导** — 上传文件 → 配置模板 → 内容提取 → 对齐合并 → 导出结果
 - **智能分组** — 根据文件名模式自动归类（患者 ID、日期等）
 - **模板系统** — 自定义输出列，支持 AI 辅助生成模板，内置临床报告预设模板
@@ -110,7 +110,7 @@ API_MODEL=step-3.7-flash
 
 ### 5 步工作流
 
-1. **上传文件** — 拖拽或点击上传文档。支持最多 500 个文件，单文件最大 100MB。
+1. **上传文件** — 拖拽或点击上传图片或纯文本文件。支持最多 500 个文件，单文件最大 100MB。
 
 2. **配置模板** — 定义需要提取的字段。可使用预设模板、粘贴表头、手动输入，或让 AI 根据描述自动生成模板。
 
@@ -145,7 +145,7 @@ npm run electron:build
 | UI | React 19、Tailwind CSS 4、Radix UI |
 | 状态管理 | Zustand 5（带持久化） |
 | AI | OpenAI SDK（兼容任何多模态 API） |
-| 文件解析 | mammoth（DOCX）、pdf-parse（PDF）、sharp（图片压缩） |
+| 文件解析 | sharp（图片压缩） |
 | 导出 | SheetJS（XLSX/CSV） |
 | 桌面端 | Electron 42 |
 | 语言 | TypeScript 5 |
