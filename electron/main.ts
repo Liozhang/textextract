@@ -89,7 +89,7 @@ function createWindow(): void {
     height: 900,
     minWidth: 1024,
     minHeight: 700,
-    title: 'Message Extract',
+    title: 'TextExtract',
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -113,7 +113,7 @@ function createWindow(): void {
     if (!isQuitting) {
       dialog.showMessageBox({
         type: 'error',
-        title: 'Message Extract',
+        title: 'TextExtract',
         message: 'The application encountered an error and needs to reload.',
         buttons: ['Reload', 'Close'],
       }).then(({ response }) => {
@@ -155,7 +155,7 @@ if (!gotTheLock) {
     if (!serverReady) {
       await dialog.showMessageBox({
         type: 'error',
-        title: 'Message Extract',
+        title: 'TextExtract',
         message: 'Failed to start the application server.',
         detail: 'The built-in server could not be started. Please try restarting the application.',
         buttons: ['OK'],

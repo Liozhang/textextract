@@ -1,5 +1,5 @@
-appId: com.message-extract.app
-productName: Message Extract
+appId: com.textextract.app
+productName: TextExtract
 
 directories:
   buildResources: build
@@ -17,8 +17,8 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: Message Extract
-  uninstallDisplayName: Message Extract
+  shortcutName: TextExtract
+  uninstallDisplayName: TextExtract
 
 compression: maximum
 

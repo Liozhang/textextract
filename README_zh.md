@@ -133,7 +133,7 @@ API_MODEL=step-3.7-flash
 npm run electron:build
 ```
 
-输出：`dist-electron/output/Message Extract Setup 0.2.0.exe`
+输出：`dist-electron/output/TextExtract Setup 0.2.0.exe`
 
 > 已配置 npmmirror 镜像加速 Electron 下载。
 

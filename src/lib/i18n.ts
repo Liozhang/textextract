@@ -25,7 +25,7 @@ const en = {
     reset: 'Reset',
   },
   app: {
-    title: 'Message Extract',
+    title: 'TextExtract',
     subtitle: 'Upload documents, AI automatically extracts structured data',
   },
   steps: {
@@ -312,7 +312,7 @@ const zh: {
     reset: '\u91CD\u7F6E',
   },
   app: {
-    title: 'Message Extract',
+    title: 'TextExtract',
     subtitle: '\u4E0A\u4F20\u6587\u6863\uFF0CAI \u81EA\u52A8\u63D0\u53D6\u7ED3\u6784\u5316\u6570\u636E',
   },
   steps: {

@@ -1,8 +1,8 @@
 {
-  "name": "message-extract",
+  "name": "text-extract",
   "version": "0.2.0",
   "description": "Document OCR extraction tool powered by AI",
-  "author": "Message Extract (liozh)",
+  "author": "TextExtract (liozh)",
   "private": true,
   "main": "dist-electron/app/main.js",
   "scripts": {
