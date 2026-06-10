@@ -12,14 +12,19 @@ out/
 
 # debug
 npm-debug.log*
+*.log
 
 # misc
 *.tsbuildinfo
 next-env.d.ts
 dev.log
-claude/
 test-files/
 test-screenshots/
+*.xlsx
 
 # electron
 dist-electron/
+
+# tool caches
+.claude/
+.playwright-mcp/
