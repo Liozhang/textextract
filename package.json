@@ -1,6 +1,6 @@
 {
   "name": "text-extract",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Document OCR extraction tool powered by AI",
   "author": "TextExtract (liozh)",
   "private": true,

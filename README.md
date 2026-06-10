@@ -131,7 +131,7 @@ A built-in clinical report template is included covering:
 npm run electron:build
 ```
 
-Output: `dist-electron/output/TextExtract Setup 0.2.0.exe`
+Output: `dist-electron/output/TextExtract Setup 0.3.0.exe`
 
 > Requires Electron mirrors for faster downloads (pre-configured for npmmirror).
 
