@@ -249,11 +249,11 @@ export function buildSchemaGuidedPrompt(
   const multiValueCols = columns.filter((c) => c.repeating);
 
   const singleSection = singleValueCols.length > 0
-    ? `单值列（放在 JSON 顶层，每份文档只出现一次）：\n${singleValueCols.map((c) => `- ${c.key} [${c.type}]${c.description ? `: ${c.description}` : ''}${c.example ? ` (示例: ${c.example})` : ''}`).join('\n')}`
+    ? `单值列（放在 JSON 顶层，每份文档只出现一次）：\n${singleValueCols.map((c) => `- ${c.key}${c.description ? `: ${c.description}` : ''}${c.example ? ` (示例: ${c.example})` : ''}`).join('\n')}`
     : '无单值列（所有列均为多值）';
 
   const multiSection = multiValueCols.length > 0
-    ? `多值列（放在 entries 数组内，每个值独立成行）：\n${multiValueCols.map((c) => `- ${c.key} [${c.type}]${c.description ? `: ${c.description}` : ''}${c.example ? ` (示例: ${c.example})` : ''}`).join('\n')}`
+    ? `多值列（放在 entries 数组内，每个值独立成行）：\n${multiValueCols.map((c) => `- ${c.key}${c.description ? `: ${c.description}` : ''}${c.example ? ` (示例: ${c.example})` : ''}`).join('\n')}`
     : '无多值列（所有列均为单值，entries 为 [{}]）';
 
   // Build: document type context → thinking steps → column definitions → user instructions → output format
