@@ -22,7 +22,7 @@ export function resolveApiSettings(
   return {
     baseUrl: (overrides?.baseUrl || process.env.API_BASE_URL || '').trim(),
     apiKey: (overrides?.apiKey || process.env.API_KEY || '').trim(),
-    model: (overrides?.model || process.env.API_MODEL || '').trim(),
+    model: (overrides?.model || process.env.API_MODEL || 'step-3.7-flash').trim(),
     concurrency: overrides?.concurrency || Number(process.env.MERGE_CONCURRENCY) || 3,
     cacheExpiryHours: overrides?.cacheExpiryHours,
   }

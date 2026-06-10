@@ -122,6 +122,7 @@ export default function PromptSettings() {
                 onChange={(e) => setApiSettings({ model: e.target.value })}
                 placeholder={t('settings.apiModelPlaceholder')}
               />
+              <p className="text-xs text-muted-foreground">{t('settings.apiModelHint')}</p>
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="api-concurrency" className="text-xs text-muted-foreground">

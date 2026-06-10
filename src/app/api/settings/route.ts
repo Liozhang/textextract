@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server'
 export async function GET() {
   const baseUrl = (process.env.API_BASE_URL || '').trim()
   const apiKey = (process.env.API_KEY || '').trim()
-  const model = (process.env.API_MODEL || '').trim()
+  const model = (process.env.API_MODEL || 'step-3.7-flash').trim()
   const concurrency = Number(process.env.MERGE_CONCURRENCY) || 3
   const cacheExpiryHours = Number(process.env.CACHE_EXPIRY_HOURS) || 24
 

@@ -209,7 +209,7 @@ const DEFAULT_PROMPT_SETTINGS: PromptSettings = {
 const DEFAULT_API_SETTINGS: ApiSettings = {
   baseUrl: '',
   apiKey: '',
-  model: '',
+  model: 'step-3.7-flash',
   concurrency: 0,
 };
 
