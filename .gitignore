@@ -18,8 +18,6 @@ npm-debug.log*
 *.tsbuildinfo
 next-env.d.ts
 dev.log
-test-files/
-test-screenshots/
 *.xlsx
 
 # electron
@@ -28,3 +26,8 @@ dist-electron/
 # tool caches
 .claude/
 .playwright-mcp/
+.remember/
+
+# dev scripts
+scripts/
+tests/

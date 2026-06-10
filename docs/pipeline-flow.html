@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Message Extract — 主流程文档</title>
+<style>
+:root {
+  --bg: #0f1117; --card: #1a1d27; --card2: #21262d; --border: #30363d;
+  --text: #c9d1d9; --text2: #8b949e; --accent: #58a6ff;
+  --upload: #3fb950; --template: #a371f7; --extract: #bc8cff;
+  --merge: #f0883e; --export: #f85149; --fix: #56d364;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; padding: 2rem; max-width: 960px; margin: 0 auto; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+h1 { font-size: 2rem; border-bottom: 2px solid var(--accent); padding-bottom: 0.5rem; margin-bottom: 1.5rem; }
+h2 { font-size: 1.3rem; margin: 2.5rem 0 1rem; padding: 0.5rem 1rem; border-left: 4px solid var(--accent); background: var(--card); }
+h3 { font-size: 1.05rem; margin: 1.3rem 0 0.5rem; color: var(--accent); }
+h4 { font-size: 0.95rem; margin: 1rem 0 0.3rem; color: var(--text2); }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem; margin: 1rem 0; }
+.card-inner { background: var(--card2); border-radius: 6px; padding: 1rem; margin: 0.8rem 0; }
+code { font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace; font-size: 0.85em; background: var(--card2); padding: 0.15rem 0.4rem; border-radius: 3px; }
+table { width: 100%; border-collapse: collapse; margin: 0.8rem 0; font-size: 0.9rem; }
+th { background: var(--card2); padding: 0.6rem 0.8rem; text-align: left; border: 1px solid var(--border); font-weight: 600; }
+td { padding: 0.5rem 0.8rem; border: 1px solid var(--border); }
+.badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+.badge-upload { background: #1a3a1a; color: var(--upload); }
+.badge-template { background: #2a1a3a; color: var(--template); }
+.badge-extract { background: #2a1a3a; color: var(--extract); }
+.badge-merge { background: #3a2a1a; color: var(--merge); }
+.badge-export { background: #3a1a1a; color: var(--export); }
+.badge-fix { background: #1a3a1a; color: var(--fix); }
+.section-upload h2 { border-color: var(--upload); }
+.section-template h2 { border-color: var(--template); }
+.section-extract h2 { border-color: var(--extract); }
+.section-merge h2 { border-color: var(--merge); }
+.section-export h2 { border-color: var(--export); }
+.section-fix h2 { border-color: var(--fix); }
+
+/* ── 流程图组件 ── */
+.flow-box { background: var(--card2); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem 1rem; font-size: 0.85rem; text-align: center; white-space: nowrap; }
+.flow-box.green { border-color: var(--upload); color: var(--upload); }
+.flow-box.purple { border-color: var(--template); color: var(--template); }
+.flow-box.lpurple { border-color: var(--extract); color: var(--extract); }
+.flow-box.orange { border-color: var(--merge); color: var(--merge); }
+.flow-box.red { border-color: var(--export); color: var(--export); }
+.flow-arrow { display: flex; align-items: center; justify-content: center; color: var(--text2); font-size: 1.2rem; padding: 0 0.3rem; }
+.flow-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
+
+/* 5 步概览 */
+.step-flow { display: flex; align-items: center; gap: 0; flex-wrap: wrap; justify-content: center; margin: 1rem 0; }
+.step-node { display: flex; flex-direction: column; align-items: center; gap: 0.3rem; padding: 0.6rem 1rem; border: 1px solid var(--border); border-radius: 6px; background: var(--card2); min-width: 110px; }
+.step-node .num { font-weight: 700; font-size: 0.9rem; }
+.step-node .label { font-size: 0.8rem; color: var(--text2); }
+.step-node .api { font-size: 0.7rem; color: var(--text2); font-family: monospace; }
+.step-connector { color: var(--text2); font-size: 1.3rem; padding: 0 0.2rem; }
+
+/* 数据流 */
+.data-flow { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin: 0.8rem 0; font-size: 0.85rem; }
+.data-flow .from { background: var(--card2); border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.6rem; }
+.data-flow .to { background: var(--card2); border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.6rem; }
+.data-flow .arrow { color: var(--accent); font-weight: 700; }
+.data-flow .method { font-size: 0.75rem; color: var(--text2); }
+
+/* 流程步骤 */
+.process { margin: 1rem 0; padding-left: 1.5rem; border-left: 2px solid var(--border); }
+.process-step { position: relative; padding: 0.4rem 0 0.4rem 1.5rem; }
+.process-step::before { content: ''; position: absolute; left: -6px; top: 0.7rem; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); }
+.process-step .step-label { font-size: 0.85rem; }
+.process-step .step-detail { font-size: 0.8rem; color: var(--text2); padding-left: 0.5rem; }
+.process-branch { position: relative; padding: 0.5rem 0 0.5rem 1.5rem; }
+.process-branch::before { content: ''; position: absolute; left: -6px; top: 0.7rem; width: 10px; height: 10px; border-radius: 50%; background: var(--merge); border: 2px solid var(--bg); }
+
+/* 对比布局 */
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+.compare-col { background: var(--card2); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; }
+.compare-col h4 { margin-top: 0; color: var(--accent); }
+
+/* 层级图 */
+.layers { display: flex; flex-direction: column; gap: 0; margin: 1rem 0; }
+.layer { display: flex; align-items: center; gap: 0.8rem; padding: 0.5rem 0.8rem; border: 1px solid var(--border); background: var(--card2); }
+.layer:first-child { border-radius: 6px 6px 0 0; }
+.layer:last-child { border-radius: 0 0 6px 6px; }
+.layer .layer-name { min-width: 100px; font-weight: 600; font-size: 0.85rem; }
+.layer .layer-desc { font-size: 0.8rem; color: var(--text2); }
+.layer .layer-arrow { color: var(--accent); }
+
+/* SSE 时间线 */
+.timeline { display: flex; gap: 0; margin: 1rem 0; }
+.timeline-client, .timeline-server { flex: 1; }
+.timeline-client { border-right: 1px dashed var(--border); padding-right: 1rem; }
+.timeline-server { padding-left: 1rem; }
+.timeline-title { font-size: 0.75rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+.timeline-event { font-size: 0.8rem; padding: 0.3rem 0; border-bottom: 1px solid rgba(48,54,61,0.3); }
+.timeline-event .ev-name { color: var(--accent); font-weight: 600; }
+.timeline-event .ev-data { color: var(--text2); font-size: 0.75rem; }
+.timeline-event .ev-from { color: var(--merge); }
+.timeline-event .ev-to { color: var(--upload); }
+
+/* 磁盘布局 */
+.disk-tree { background: var(--card2); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 0.85rem; line-height: 1.8; }
+.disk-tree .folder { color: var(--accent); }
+.disk-tree .meta { color: var(--text2); font-size: 0.8rem; }
+.disk-tree .file { color: var(--text); }
+
+/* 前缀列表 */
+.prefix-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.3rem; margin: 0.5rem 0; }
+.prefix-item { background: var(--card2); border-radius: 4px; padding: 0.3rem 0.6rem; font-size: 0.85rem; font-family: monospace; }
+.prefix-item .len { color: var(--text2); font-size: 0.75rem; float: right; }
+
+/* 状态机 */
+.state-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.8rem; align-items: center; margin: 1rem 0; }
+.state-box { background: var(--card2); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.8rem; font-size: 0.85rem; min-width: 120px; text-align: center; }
+.state-box.active { border-color: var(--accent); color: var(--accent); }
+.state-box.error { border-color: var(--export); color: var(--export); }
+.state-arrow { color: var(--text2); font-size: 0.75rem; padding: 0.15rem 0; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>Message Extract &mdash; 主流程文档</h1>
+<p>用户上传文件，AI 提取结构化信息，合并为统一表格后导出。以下描述完整的 5 步数据处理流程。</p>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="overview">流程总览</h2>
+<div class="step-flow">
+  <div class="step-node" style="border-color:var(--upload)">
+    <span class="num" style="color:var(--upload)">1</span>
+    <span class="label">文件上传</span>
+    <span class="api">POST /api/upload</span>
+  </div>
+  <span class="step-connector">&rarr;</span>
+  <div class="step-node" style="border-color:var(--template)">
+    <span class="num" style="color:var(--template)">2</span>
+    <span class="label">模板配置</span>
+    <span class="api">Schema / Preset</span>
+  </div>
+  <span class="step-connector">&rarr;</span>
+  <div class="step-node" style="border-color:var(--extract)">
+    <span class="num" style="color:var(--extract)">3</span>
+    <span class="label">内容提取</span>
+    <span class="api">POST /api/extract (SSE)</span>
+  </div>
+  <span class="step-connector">&rarr;</span>
+  <div class="step-node" style="border-color:var(--merge)">
+    <span class="num" style="color:var(--merge)">4</span>
+    <span class="label">对齐合并</span>
+    <span class="api">POST /api/align-merge (SSE)</span>
+  </div>
+  <span class="step-connector">&rarr;</span>
+  <div class="step-node" style="border-color:var(--export)">
+    <span class="num" style="color:var(--export)">5</span>
+    <span class="label">导出结果</span>
+    <span class="api">XLSX / CSV / JSON</span>
+  </div>
+</div>
+
+<h3>数据在各步骤间的流转</h3>
+<div class="data-flow">
+  <span class="from">原始文件</span> <span class="arrow">&rarr;</span> <span class="method">FormData</span> <span class="arrow">&rarr;</span> <span class="to">服务器临时目录</span>
+</div>
+<div class="data-flow">
+  <span class="from">临时文件</span> <span class="arrow">&rarr;</span> <span class="method">AI + SSE</span> <span class="arrow">&rarr;</span> <span class="to">{fileId}.json (结构化数据)</span>
+</div>
+<div class="data-flow">
+  <span class="from">各文件结果</span> <span class="arrow">&rarr;</span> <span class="method">合并 + 对齐</span> <span class="arrow">&rarr;</span> <span class="to">mergedExportData (统一表格行)</span>
+</div>
+<div class="data-flow">
+  <span class="from">统一表格</span> <span class="arrow">&rarr;</span> <span class="method">客户端生成</span> <span class="arrow">&rarr;</span> <span class="to">XLSX / CSV / JSON 下载</span>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="upload" class="section-upload">第一步：文件上传</h2>
+<div class="card">
+
+<div class="process">
+  <div class="process-step">
+    <div class="step-label">用户拖拽或选择文件（支持 PDF / 图片 / Word / Excel / 文本）</div>
+  </div>
+  <div class="process-step">
+    <div class="step-label">客户端分块上传（每块 20 个文件，最多 500 个）</div>
+    <div class="step-detail">FormData POST &rarr; /api/upload，逐块等待响应后上传下一块</div>
+  </div>
+  <div class="process-step">
+    <div class="step-label">服务端校验：单文件 &le; 100MB，总大小 &le; 2GB，总数 &le; 500</div>
+  </div>
+  <div class="process-step">
+    <div class="step-label">生成 sessionId + fileId，写入服务器临时目录</div>
+  </div>
+  <div class="process-step">
+    <div class="step-label">返回 { files, sessionId, groupCount } 给客户端</div>
+    <div class="step-detail">客户端将 file.sessionId 保存到 Zustand，后续提取时传给服务端读取文件</div>
+  </div>
+  <div class="process-branch">
+    <div class="step-label">fire-and-forget: cleanupExpiredSessions(cacheExpiryMs)</div>
+    <div class="step-detail">按用户配置的过期时间（默认 24h）清理过期 session 目录</div>
+  </div>
+</div>
+
+<h3>磁盘布局</h3>
+<div class="disk-tree">
+<span class="folder">{tempDir}/</span><br>
+&emsp;<span class="folder">{sessionId}/</span><br>
+&emsp;&emsp;<span class="meta">_meta.json</span> <span style="color:var(--text2);font-size:0.8rem">&larr; { createdAt: 时间戳 }</span><br>
+&emsp;&emsp;<span class="file">{fileId-1}</span> <span style="color:var(--text2);font-size:0.8rem">&larr; 原始文件二进制</span><br>
+&emsp;&emsp;<span class="file">{fileId-2}</span><br>
+&emsp;&emsp;<span class="file">...</span>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="template" class="section-template">第二步：模板配置</h2>
+<div class="card">
+<p>模板定义输出列（字段名、类型、描述、示例值），指导 AI 按列提取数据。</p>
+
+<h3>模板列结构</h3>
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>key</code></td><td>string</td><td>列名，如 "姓名"、"病理诊断"</td></tr>
+<tr><td><code>type</code></td><td>'string' | 'number' | 'boolean'</td><td>值类型</td></tr>
+<tr><td><code>description</code></td><td>string</td><td>列描述，传给 AI 辅助理解</td></tr>
+<tr><td><code>example?</code></td><td>string</td><td>示例值</td></tr>
+<tr><td><code>repeating?</code></td><td>boolean</td><td>多值列（如一行检验结果含多条项目）</td></tr>
+</table>
+
+<h3>模板来源（4 种方式）</h3>
+<div class="process">
+  <div class="process-step"><div class="step-label"><strong>预设模板</strong></div><div class="step-detail">内置临床报告模板，一步加载</div></div>
+  <div class="process-step"><div class="step-label"><strong>手动添加</strong></div><div class="step-detail">UI 表单逐个输入字段名</div></div>
+  <div class="process-step"><div class="step-label"><strong>从提取结果导入</strong></div><div class="step-detail">提取完成后，显示所有已提取的字段名供勾选</div></div>
+  <div class="process-step"><div class="step-label"><strong>AI 生成</strong></div><div class="step-detail">上传样本文件 &rarr; AI 分析内容 &rarr; 自动生成列定义</div></div>
+</div>
+
+<h3>模板的作用</h3>
+<div class="compare">
+  <div class="compare-col">
+    <h4>有模板 (Schema 模式)</h4>
+    <div class="process">
+      <div class="process-step"><div class="step-label">AI 按列名精确提取</div><div class="step-detail">输出 entries: [{key: value, ...}]</div></div>
+      <div class="process-step"><div class="step-label">提取阶段直接对齐列</div><div class="step-detail">减少后续合并工作量</div></div>
+    </div>
+  </div>
+  <div class="compare-col">
+    <h4>无模板 (Legacy 模式)</h4>
+    <div class="process">
+      <div class="process-step"><div class="step-label">AI 自由提取所有字段</div><div class="step-detail">输出 data: {任意键值对}</div></div>
+      <div class="process-step"><div class="step-label">合并阶段再程序化拼接</div><div class="step-detail">需要额外的 normalizeKey + isValidKey 处理</div></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="extract" class="section-extract">第三步：内容提取</h2>
+<div class="card">
+
+<h3>提取流程概览</h3>
+<div class="process">
+  <div class="process-step">
+    <div class="step-label"><strong>Phase 0: 文件分组</strong></div>
+    <div class="step-detail">groupFilesByPrefix() &mdash; 按文件名公共前缀分组（如 "张三-报告1.pdf" + "张三-报告2.pdf" = 同组）</div>
+  </div>
+  <div class="process-step">
+    <div class="step-label"><strong>Phase 1: 逐文件 AI 提取</strong></div>
+    <div class="step-detail">workerPool(concurrency) 并行处理，每个文件最多 3 次重试</div>
+  </div>
+  <div class="process-step">
+    <div class="step-label"><strong>Phase 2: 写入磁盘</strong></div>
+    <div class="step-detail">writeResult() &rarr; tempDir/sessionId/results/{fileId}.json</div>
+  </div>
+  <div class="process-step">
+    <div class="step-label"><strong>Phase 3: 返回提取结果</strong></div>
+    <div class="step-detail">SSE event: extraction_done { sessionId, groups }</div>
+  </div>
+</div>
+
+<h3>文件解析器</h3>
+<table>
+<tr><th>格式</th><th>解析方式</th><th>传给 AI 的内容</th></tr>
+<tr><td>.docx</td><td>mammoth.extractRawText()</td><td>纯文本</td></tr>
+<tr><td>.pdf</td><td>pdf-parse(buffer)</td><td>纯文本</td></tr>
+<tr><td>.xlsx/.xls</td><td>XLSX.utils.sheet_to_csv()</td><td>CSV 文本</td></tr>
+<tr><td>图片</td><td>sharp 压缩 &rarr; base64</td><td>多模态图片 (dataUrl)</td></tr>
+<tr><td>.txt/.md/.csv/.json</td><td>readFileSync (utf-8)</td><td>纯文本</td></tr>
+</table>
+
+<h3>双模式分支</h3>
+<div class="compare">
+  <div class="compare-col">
+    <h4>Schema-Guided 模式</h4>
+    <div style="font-size:0.8rem;color:var(--text2);margin-bottom:0.5rem">templateColumns.length &gt; 0</div>
+    <div class="process">
+      <div class="process-step"><div class="step-label">buildSchemaGuidedPrompt()</div><div class="step-detail">system prompt 中注入列定义 + 输出格式约束</div></div>
+      <div class="process-step"><div class="step-label">AI 返回 <code>{"entries": [{"姓名":"张三","年龄":"45"}]}</code></div></div>
+      <div class="process-step"><div class="step-label">validatedEntries: 精确匹配 &rarr; normalizeKey fuzzy fallback</div></div>
+      <div class="process-step"><div class="step-label">cleanResultKeys(entries)</div><div class="step-detail">过滤无效 key</div></div>
+      <div class="process-branch"><div class="step-label">3 次全失败 &rarr; Legacy fallback (降级自由提取)</div></div>
+    </div>
+  </div>
+  <div class="compare-col">
+    <h4>Legacy 自由模式</h4>
+    <div style="font-size:0.8rem;color:var(--text2);margin-bottom:0.5rem">无 templateColumns</div>
+    <div class="process">
+      <div class="process-step"><div class="step-label">EXTRACTION_SYSTEM_MESSAGE</div><div class="step-detail">AI 自由提取所有结构化字段</div></div>
+      <div class="process-step"><div class="step-label">AI 返回 <code>{"姓名":"张三","年龄":"45岁","1-基本信息-性别{":"男"}</code></div></div>
+      <div class="process-step"><div class="step-label">flattenObject (嵌套&rarr;扁平)</div><div class="step-detail">isAllowedStructure + Auto-flatten</div></div>
+      <div class="process-step"><div class="step-label">马尔可夫键清洗</div><div class="step-detail">/^[\\s:;|，、\\-]+/ 前导字符剥离</div></div>
+      <div class="process-step"><div class="step-label">cleanResultKeys(data) &mdash; 过滤无效 key</div></div>
+    </div>
+  </div>
+</div>
+
+<h3>重试与容错</h3>
+<div class="card-inner">
+  <strong>MAX_RETRIES = 3</strong>
+  <div class="process">
+    <div class="process-step"><div class="step-label"><strong>超时计算</strong></div><div class="step-detail">baseTimeout = API_TIMEOUT (默认 120s) + fileSizeMB &times; 10s, 上限 schema 600s / legacy 300s<br>后续重试缩短: attemptFactor 1&rarr;1.0, 2&rarr;0.6, 3&rarr;0.4</div></div>
+    <div class="process-step"><div class="step-label"><strong>Stall 检测</strong></div><div class="step-detail">每个 SSE chunk 后重置计时器，停顿超过 60s(schema)/30s(legacy) &rarr; 保留已解析内容 &rarr; 重试</div></div>
+    <div class="process-step"><div class="step-label"><strong>JSON 解析失败</strong></div><div class="step-detail">将错误信息作为反馈发给 AI，让 AI 自行修正</div></div>
+    <div class="process-step"><div class="step-label"><strong>API 错误</strong></div><div class="step-detail">429 &rarr; 等待 5s | 其他 &rarr; 指数退避 (1s, 2s, 4s)</div></div>
+    <div class="process-branch"><div class="step-label"><strong>全部重试耗尽</strong></div><div class="step-detail">Schema 模式 &rarr; Legacy fallback (单次非流式) | Legacy 模式 &rarr; 标记失败，继续下一个文件</div></div>
+  </div>
+</div>
+
+<h3>SSE 事件时序</h3>
+<div class="timeline">
+  <div class="timeline-client">
+    <div class="timeline-title">客户端接收</div>
+    <div class="timeline-event"><span class="ev-to">POST /api/extract &rarr;&rarr;</span></div>
+    <div class="timeline-event"><span class="ev-name">phase</span> <span class="ev-data">{phase:'grouping'}</span></div>
+    <div class="timeline-event"><span class="ev-name">grouping_done</span> <span class="ev-data">{groups: [...]}</span></div>
+    <div class="timeline-event"><span class="ev-name">phase</span> <span class="ev-data">{phase:'extracting'}</span></div>
+    <div class="timeline-event"><span class="ev-name">file_start</span> <span class="ev-data">{fileName}</span></div>
+    <div class="timeline-event"><span class="ev-name">file_retry</span> <span class="ev-data">{attempt, reason}</span></div>
+    <div class="timeline-event"><span class="ev-name">file_complete</span> <span class="ev-data">{data/entries (已清理)}</span></div>
+    <div class="timeline-event"><span class="ev-name">extraction_done</span> <span class="ev-data">{sessionId, groups}</span></div>
+  </div>
+  <div class="timeline-server">
+    <div class="timeline-title">服务端处理</div>
+    <div class="timeline-event">&nbsp;</div>
+    <div class="timeline-event"><span style="color:var(--text2)">Phase 0: groupFilesByPrefix()</span></div>
+    <div class="timeline-event">&nbsp;</div>
+    <div class="timeline-event"><span style="color:var(--text2)">Phase 1: workerPool(concurrency)</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">跳过已存在结果 (断点续传)</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">parseFileContent + OpenAI stream</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">parseJsonResponse + validate</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">cleanResultKeys + writeResult &rarr; 磁盘</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">cleanupExpiredSessions + controller.close()</span></div>
+  </div>
+</div>
+
+<h3>磁盘写入结果格式</h3>
+<div class="compare">
+  <div class="compare-col">
+    <h4>Schema 模式</h4>
+    <code style="font-size:0.8rem">{ "success": true, "entries": [{"姓名":"张三","年龄":"45"}] }</code>
+  </div>
+  <div class="compare-col">
+    <h4>Legacy 模式</h4>
+    <code style="font-size:0.8rem">{ "success": true, "data": {"姓名":"张三","年龄":"45岁"} }</code>
+  </div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="merge" class="section-merge">第四步：对齐合并</h2>
+<div class="card">
+
+<h3>路径选择</h3>
+<div class="compare">
+  <div class="compare-col">
+    <h4>快速路径 (Programmatic)</h4>
+    <div style="font-size:0.8rem;color:var(--text2);margin-bottom:0.5rem">任一 result 含 entries</div>
+    <div class="process">
+      <div class="process-step"><div class="step-label">readAllResults(sessionId)</div><div class="step-detail">从磁盘读取所有文件结果</div></div>
+      <div class="process-step"><div class="step-label">收集 schemaHeaders</div><div class="step-detail">normalizeKey + isValidKey 过滤</div></div>
+      <div class="process-step"><div class="step-label">逐组合并（纯程序化，不调 AI）</div></div>
+      <div class="process-step"><div class="step-label">send all_done { rows }</div></div>
+    </div>
+  </div>
+  <div class="compare-col">
+    <h4>Legacy 路径 (AI Merge)</h4>
+    <div style="font-size:0.8rem;color:var(--text2);margin-bottom:0.5rem">仅有 data 无 entries</div>
+    <div class="process">
+      <div class="process-step"><div class="step-label">readAllResults(sessionId)</div></div>
+      <div class="process-step"><div class="step-label">收集 outputHeaders</div></div>
+      <div class="process-step"><div class="step-label">Phase 1: workerPool &rarr; mergeGroupWithAI()</div><div class="step-detail">AI 合并同组多文件结果</div></div>
+      <div class="process-branch"><div class="step-label">Phase 2 (如有 templateColumns): alignToTemplateWithAI()</div><div class="step-detail">AI 对齐到模板列</div></div>
+      <div class="process-step"><div class="step-label">send all_done { rows }</div></div>
+    </div>
+  </div>
+</div>
+
+<h3>快速路径 &mdash; 程序化合并逻辑</h3>
+<div class="card-inner">
+  <div class="process">
+    <div class="process-step"><div class="step-label">过滤成功结果: <code>r.success && (r.data || r.entries)</code></div></div>
+    <div class="process-step"><div class="step-label">空组跳过: groupEntries.length === 0 &rarr; continue</div></div>
+    <div class="process-step"><div class="step-label">公共前缀检测</div><div class="step-detail">如所有 key 共享 "王忠-" 前缀，则剥离为 "性别"、"年龄" 等</div></div>
+    <div class="process-step"><div class="step-label">逐 entry 合并循环:</div>
+      <div class="step-detail" style="padding-left:1.5rem">
+        1. <code>normalizeKey(rawKey)</code> &mdash; 归一化键名<br>
+        2. <code>isValidKey(key)</code> &mdash; 过滤垃圾 key（测量值、日期、ID 等）<br>
+        3. <code>normalizeValue(value)</code> &mdash; 对象/数组转字符串<br>
+        4. 首值优先写入，冲突记录到 fieldConsistency
+      </div>
+    </div>
+    <div class="process-step"><div class="step-label">重建 imageDataUrl: readFile &rarr; base64 &rarr; dataUrl</div><div class="step-detail">异步从磁盘读取原始文件用于预览</div></div>
+  </div>
+</div>
+
+<h3>SSE 事件时序</h3>
+<div class="timeline">
+  <div class="timeline-client">
+    <div class="timeline-title">客户端接收</div>
+    <div class="timeline-event"><span class="ev-to">POST /api/align-merge &rarr;&rarr;</span></div>
+    <div class="timeline-event"><span class="ev-name">phase</span> <span class="ev-data">{phase:'merging'}</span></div>
+    <div class="timeline-event"><span class="ev-name">schema_ready</span> <span class="ev-data">{headers[], totalRows}</span></div>
+    <div class="timeline-event"><span class="ev-name">merge_start</span> <span class="ev-data">{groupKey, fileCount}</span></div>
+    <div class="timeline-event"><span class="ev-name">group_merged</span> <span class="ev-data">{row data + conflicts}</span></div>
+    <div class="timeline-event" style="color:var(--text2)">&mdash; 或 &mdash;</div>
+    <div class="timeline-event"><span class="ev-name" style="color:var(--export)">group_error</span> <span class="ev-data">{message}</span></div>
+    <div class="timeline-event"><span class="ev-name">phase</span> <span class="ev-data">{phase:'aligning'}</span> <span style="color:var(--text2)">(如有 templateColumns)</span></div>
+    <div class="timeline-event"><span class="ev-name">group_aligned</span></div>
+    <div class="timeline-event"><span class="ev-name">all_done</span> <span class="ev-data">{rows[], totalGroups, totalFiles}</span></div>
+  </div>
+  <div class="timeline-server">
+    <div class="timeline-title">服务端处理</div>
+    <div class="timeline-event">&nbsp;</div>
+    <div class="timeline-event">&nbsp;</div>
+    <div class="timeline-event"><span style="color:var(--text2)">确定 headers (模板列 > 自动检测)</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">per group (workerPool / 顺序)</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">row data + conflicts</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">error message</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">Phase 2: AI 模板对齐</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">aligned row data</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">全部行 + 关闭 stream</span></div>
+    <div class="timeline-event"><span style="color:var(--text2)">cleanupExpiredSessions + close()</span></div>
+  </div>
+</div>
+
+<h3>重试机制</h3>
+<div class="card-inner">
+  <p style="font-size:0.85rem">合并面板支持 <strong>单行重试</strong>：传入 <code>retryGroupIds</code>，服务端仅处理指定组，客户端合并重试结果到现有数据中。</p>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="export" class="section-export">第五步：导出</h2>
+<div class="card">
+
+<div class="process">
+  <div class="process-step">
+    <div class="step-label">从 mergedExportData 读取合并后的统一表格行</div>
+  </div>
+  <div class="process-step">
+    <div class="step-label">用户选择导出格式</div>
+  </div>
+  <div class="process-step">
+    <div class="step-label">客户端生成文件（纯前端，不经过服务端）</div>
+  </div>
+  <div class="process-step">
+    <div class="step-label">触发浏览器下载</div>
+  </div>
+</div>
+
+<h3>格式差异</h3>
+<div class="compare">
+  <div class="compare-col">
+    <h4>XLSX</h4>
+    <code style="font-size:0.8rem">XLSX.utils.json_to_sheet(data)<br>&rarr; XLSX.writeFile(workbook)</code>
+  </div>
+  <div class="compare-col">
+    <h4>CSV</h4>
+    <code style="font-size:0.8rem">手动拼接: header行 + 数据行<br>(逗号分隔, 值引号包裹)</code>
+  </div>
+</div>
+<div style="margin-top:0.5rem">
+  <h4>JSON</h4>
+  <code style="font-size:0.8rem">JSON.stringify(data, null, 2)</code>
+</div>
+
+<h3>flattenRow() 嵌套展平</h3>
+<div class="card-inner">
+  导出前递归展平嵌套对象：<br>
+  <code style="font-size:0.85rem">"检验结果": { "WBC": "5.2", "RBC": "4.1" }</code><br>
+  <span class="flow-arrow" style="color:var(--accent)">&darr;</span><br>
+  <code style="font-size:0.85rem">"检验结果-WBC": "5.2", "检验结果-RBC": "4.1"</code>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="normalize" class="section-fix">键名归一化</h2>
+<div class="card">
+<p>AI 返回的键名经常含有垃圾字符（如 <code>"1-基本信息-性别{"</code>），需要在提取和合并阶段清理。三层防线协同工作：</p>
+
+<div class="layers">
+  <div class="layer">
+    <span class="layer-name" style="color:var(--template)">Layer 1: Prompt 约束</span>
+    <span class="layer-desc">system prompt 中禁止 AI 输出单字母(除T/N/M)、纯数字、测量值、日期、{:'" 后缀等</span>
+    <span class="layer-arrow">&darr;</span>
+  </div>
+  <div class="layer">
+    <span class="layer-name" style="color:var(--extract)">Layer 2: cleanResultKeys</span>
+    <span class="layer-desc">extract 路由写入磁盘前，对每个 key 调用 normalizeKey + isValidKey 过滤</span>
+    <span class="layer-arrow">&darr;</span>
+  </div>
+  <div class="layer">
+    <span class="layer-name" style="color:var(--merge)">Layer 3: Merge 阶段过滤</span>
+    <span class="layer-desc">align-merge 路由合并时再次调用 normalizeKey + isValidKey，确保无遗漏</span>
+  </div>
+</div>
+
+<h3>normalizeKey() 处理步骤</h3>
+<div style="margin:1rem 0">
+  <div class="flow-row" style="justify-content:center">
+    <div class="flow-box" style="background:rgba(88,166,255,0.1)">输入: <code>"1-基本信息-性别{"</code></div>
+  </div>
+</div>
+<div class="process">
+  <div class="process-step"><div class="step-label"><strong>Step 1</strong> trim + NFKC + 零宽字符清除</div></div>
+  <div class="process-step"><div class="step-label"><strong>Step 2</strong> NUMBERED_SECTION_RE: <code>/^(检验结果|检验)\d+\s*[-&mdash;]*/</code></div><div class="step-detail">不匹配则跳过</div></div>
+  <div class="process-step"><div class="step-label"><strong>Step 3</strong> 数字前缀: <code>/^\d+\s*[-&mdash;]\s*/</code></div><div class="step-detail">&rarr; "基本信息-性别{"</div></div>
+  <div class="process-step"><div class="step-label"><strong>Step 4</strong> SECTION_PREFIXES 剥离（最长匹配优先，循环直到无前缀可剥）</div><div class="step-detail">匹配 "基本信息-" &rarr; &rarr; "性别{"</div></div>
+  <div class="process-step"><div class="step-label"><strong>Step 5</strong> cleanKeySuffix: <code>/[{:\'",}\s]+$/</code></div><div class="step-detail">&rarr; "性别"</div></div>
+  <div class="process-step"><div class="step-label"><strong>Step 6</strong> 空字符串防护 &mdash; 若结果为空返回原始 key</div></div>
+</div>
+<div style="margin:0.5rem 0">
+  <div class="flow-row" style="justify-content:center">
+    <div class="flow-box green">输出: <code>"性别"</code></div>
+  </div>
+</div>
+
+<h3>isValidKey() 拦截规则</h3>
+<table>
+<tr><th>拦截类型</th><th>被拦截示例</th><th>原因</th></tr>
+<tr><td>空字符串</td><td>""</td><td>清理后变空</td></tr>
+<tr><td>单个特殊字符</td><td>",", ")", "&rarr;"</td><td>无意义标点</td></tr>
+<tr><td>单字母 (T/N/M 除外)</td><td>"B", "K"</td><td>可能是噪声；T/N/M 为 TNM 分期保留</td></tr>
+<tr><td>纯整数</td><td>"1", "1780698"</td><td>文件 ID 或索引</td></tr>
+<tr><td>日期</td><td>"2026-03-19"</td><td>不是字段名</td></tr>
+<tr><td>时间</td><td>"7:22", "18:54:06"</td><td>不是字段名</td></tr>
+<tr><td>测量值</td><td>"4.20mmol/L", "14.1%"</td><td>是数据值不是字段名</td></tr>
+<tr><td>IP 地址</td><td>"16.22.184.45"</td><td>不是字段名</td></tr>
+</table>
+
+<h3>SECTION_PREFIXES (最长匹配优先)</h3>
+<div class="prefix-grid">
+  <div class="prefix-item">'全血细胞计数-' <span class="len">7字</span></div>
+  <div class="prefix-item">'补充报告-' <span class="len">5字</span></div>
+  <div class="prefix-item">'检验结果-' <span class="len">5字</span></div>
+  <div class="prefix-item">'检验信息-' <span class="len">5字</span></div>
+  <div class="prefix-item">'检验项目-' <span class="len">5字</span></div>
+  <div class="prefix-item">'检验方法-' <span class="len">5字</span></div>
+  <div class="prefix-item">'检测方法-' <span class="len">5字</span></div>
+  <div class="prefix-item">'患者信息-' <span class="len">5字</span></div>
+  <div class="prefix-item">'病理信息-' <span class="len">5字</span></div>
+  <div class="prefix-item">'病理报告-' <span class="len">5字</span></div>
+  <div class="prefix-item">'标本信息-' <span class="len">5字</span></div>
+  <div class="prefix-item">'就诊信息-' <span class="len">5字</span></div>
+  <div class="prefix-item">'诊断意见-' <span class="len">5字</span></div>
+  <div class="prefix-item">'镜下诊断-' <span class="len">5字</span></div>
+  <div class="prefix-item">'基本信息-' <span class="len">5字</span></div>
+  <div class="prefix-item">'血常规-' <span class="len">4字</span></div>
+  <div class="prefix-item">'患者-' <span class="len">3字</span></div>
+  <div class="prefix-item">'诊断-' <span class="len">3字</span></div>
+  <div class="prefix-item">'常规-' <span class="len">3字</span></div>
+</div>
+<p style="font-size:0.8rem;color:var(--text2);margin-top:0.5rem">"诊断意见-" 排在 "诊断-" 之前，确保最长匹配。</p>
+
+<h3>效果</h3>
+<table>
+<tr><th>指标</th><th>修复前</th><th>修复后</th></tr>
+<tr><td>唯一 key 数</td><td>3297</td><td>1761 <span class="badge badge-fix">-46.6%</span></td></tr>
+<tr><td>垃圾 key</td><td>~247</td><td>0 <span class="badge badge-fix">清零</span></td></tr>
+<tr><td>{ 后缀 key</td><td>178</td><td>0 <span class="badge badge-fix">清零</span></td></tr>
+</table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="errors">错误处理与容错</h2>
+<div class="card">
+<h3>单文件隔离</h3>
+<p style="font-size:0.9rem">提取和合并阶段均使用 <code>workerPool</code>，每个文件/组的处理在独立 try-catch 中执行：</p>
+<div class="card-inner">
+  <div class="compare">
+    <div class="compare-col">
+      <h4>单文件失败 (Extract)</h4>
+      <div class="process">
+        <div class="process-step"><div class="step-label">最多重试 3 次 + Schema fallback</div></div>
+        <div class="process-branch"><div class="step-label">最终失败</div><div class="step-detail">writeResult(success: false, error) + SSE: file_complete(success: false)<br>继续处理下一个文件，不影响其他文件</div></div>
+      </div>
+    </div>
+    <div class="compare-col">
+      <h4>单组失败 (Align-Merge)</h4>
+      <div class="process">
+        <div class="process-step"><div class="step-label">mergeGroupWithAI / alignToTemplateWithAI 出错</div></div>
+        <div class="process-branch"><div class="step-label">SSE: group_error</div><div class="step-detail">单组失败不影响其他组<br>客户端可单行重试 (retryGroupIds)</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>SSE 流断尾防护</h3>
+<div class="card-inner">
+  <div class="process">
+    <div class="process-step"><div class="step-label">流正常结束时追加 <code>'\\n\\n'</code></div><div class="step-detail">强制解析 buffer 中最后一个可能未完成的事件</div></div>
+    <div class="process-step"><div class="step-label">fallback: 如果 pipelineRowsRef 为空（all_done 丢失）</div><div class="step-detail">从 buffer 原始数据中提取；否则使用空结果继续</div></div>
+  </div>
+</div>
+
+<h3>会话中断恢复</h3>
+<div class="card-inner">
+  <div class="process">
+    <div class="process-step"><div class="step-label">提取过程中每完成一个批次，保存进度到 IndexedDB</div></div>
+    <div class="process-step"><div class="step-label">页面重新加载时检查是否有未完成的会话</div></div>
+    <div class="process-step"><div class="step-label">弹出恢复横幅，用户可选择恢复或放弃</div></div>
+    <div class="process-branch"><div class="step-label">过期检查: 超过 24h 的会话拒绝恢复</div><div class="step-detail">服务端临时文件已清理，恢复无意义</div></div>
+    <div class="process-step"><div class="step-label">恢复后从断点继续提取（跳过已有结果的文件）</div></div>
+  </div>
+</div>
+</div>
+
+<hr style="border-color: var(--border); margin: 2rem 0;">
+<p class="tag">Generated: 2026-06-05 | Message Extract Pipeline Flow</p>
+
+</body>
+</html>
