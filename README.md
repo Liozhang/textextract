@@ -34,7 +34,7 @@
 
 | Upload | Template Preset |
 |:---:|:---:|
-| ![Upload](docs/screenshots/01-initial.png) | ![Template Preset](docs/screenshots/03a-template-preset.png) |
+| ![Upload](docs/screenshots/02-uploaded.png) | ![Template Preset](docs/screenshots/03a-template-preset.png) |
 
 | Template Configured | Extracting |
 |:---:|:---:|

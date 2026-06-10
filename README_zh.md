@@ -36,7 +36,7 @@
 
 | 上传文件 | 模板预设 |
 |:---:|:---:|
-| ![上传文件](docs/screenshots/01-initial.png) | ![模板预设](docs/screenshots/03a-template-preset.png) |
+| ![上传文件](docs/screenshots/02-uploaded.png) | ![模板预设](docs/screenshots/03a-template-preset.png) |
 
 | 模板确认 | 提取中 |
 |:---:|:---:|
