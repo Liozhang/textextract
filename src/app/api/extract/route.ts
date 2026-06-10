@@ -1,6 +1,5 @@
 import { NextRequest } from 'next/server'
 import OpenAI from 'openai'
-import mammoth from 'mammoth'
 import sharp from 'sharp'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
@@ -117,34 +116,6 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
   }
 
   switch (ext) {
-    case 'docx': {
-      const buffer = Buffer.from(getBase64(), 'base64')
-      const result = await mammoth.extractRawText({ buffer })
-      return { text: result.value }
-    }
-
-    case 'pdf': {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const pdfParse = require('pdf-parse')
-      const buffer = Buffer.from(getBase64(), 'base64')
-      const result = await pdfParse(buffer)
-      return { text: result.text }
-    }
-
-    case 'xlsx':
-    case 'xls': {
-      const XLSX = await import('xlsx')
-      const buffer = Buffer.from(getBase64(), 'base64')
-      const workbook = XLSX.read(buffer, { type: 'buffer' })
-      const firstSheet = workbook.SheetNames[0]
-      const sheet = workbook.Sheets[firstSheet]
-      const text = XLSX.utils.sheet_to_csv(sheet)
-      return { text }
-    }
-
-    case 'doc':
-      return { text: '不支持 .doc 格式，请转换为 .docx' }
-
     case 'jpg':
     case 'jpeg':
     case 'png':
@@ -180,12 +151,6 @@ async function parseFileContent(file: FileInput, compressThreshold: number): Pro
 
     case 'txt':
     case 'md':
-    case 'csv':
-    case 'json':
-    case 'tsv':
-    case 'xml':
-    case 'html':
-    case 'htm':
     default: {
       // For text-based files, try server temp file first, then fallback to content
       if (file.sessionId) {

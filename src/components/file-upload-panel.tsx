@@ -5,9 +5,7 @@ import {
   Upload,
   X,
   FileText,
-  FileSpreadsheet,
   FileImage,
-  FileType2,
   File as FileIcon,
   Trash2,
   Loader2,
@@ -33,13 +31,8 @@ const IMAGE_MAX_WIDTH = 2048;
 const IMAGE_QUALITY = 0.85;
 
 const ACCEPTED_EXTENSIONS = [
-  '.pdf',
-  '.docx',
-  '.xlsx',
   '.txt',
   '.md',
-  '.csv',
-  '.json',
   '.jpg',
   '.jpeg',
   '.png',
@@ -104,10 +97,7 @@ function getFileExtension(name: string): string {
 function getFileIcon(name: string) {
   const ext = getFileExtension(name);
   if (['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext)) return <FileImage className="size-5 text-emerald-500" />;
-  if (['.xlsx', '.xls', '.csv'].includes(ext)) return <FileSpreadsheet className="size-5 text-green-600" />;
-  if (['.docx'].includes(ext)) return <FileType2 className="size-5 text-blue-500" />;
-  if (['.pdf'].includes(ext)) return <FileText className="size-5 text-red-500" />;
-  if (['.txt', '.md', '.json'].includes(ext)) return <FileText className="size-5 text-orange-500" />;
+  if (['.txt', '.md'].includes(ext)) return <FileText className="size-5 text-orange-500" />;
   return <FileIcon className="size-5 text-muted-foreground" />;
 }
 
